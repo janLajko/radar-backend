@@ -148,7 +148,7 @@ loop each selected raw item
     note right of RadarWorker: discard_reason is persisted\nfor prompt quality debugging
   else should_ingest = true
     RadarWorker->SharedDB: begin transaction
-    RadarWorker->SharedDB: insert radar_policy_updates\ncopy source fields and original_text from raw item\npolicy_extract_status = pending\npolicy_review_status = pending\naction_calculate_status = pending
+    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and original_text\npolicy_extract_status = pending\npolicy_review_status = pending\naction_calculate_status = pending
     RadarWorker->SharedDB: set policy_update_status = ingested
     RadarWorker->SharedDB: commit
   end
