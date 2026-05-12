@@ -1,0 +1,176 @@
+<mxfile host="app.diagrams.net" modified="2026-05-08T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="compliance-radar-architecture" name="Compliance Radar Architecture">
+    <mxGraphModel dx="1800" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Compliance Radar BLB 1.0 Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=28;fontStyle=1;fontColor=#172033;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1720" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sourcesContainer" value="Config-driven Inputs" style="swimlane;html=1;startSize=34;rounded=1;whiteSpace=wrap;fillColor=#F7F9FC;strokeColor=#A8B3C7;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="270" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="sourceConfig" value="Source Config YAML&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;source_key / source_label / adapter / fetch config&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#EAF3FF;strokeColor=#6EA8E5;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="65" y="155" width="220" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="externalSources" value="External Policy Sources&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;Radar-specific source set&lt;br&gt;Federal Register / USTR / others&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#A8B3C7;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="65" y="260" width="220" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="attachments" value="Attachments / PDFs&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;URLs persisted, body downloaded on demand&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF7E8;strokeColor=#D9A441;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="65" y="385" width="220" height="72" as="geometry" />
+        </mxCell>
+
+        <mxCell id="radarContainer" value="radar-backend" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F8FBF4;strokeColor=#7FA66A;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="100" width="360" height="760" as="geometry" />
+        </mxCell>
+        <mxCell id="singleWorker" value="Single-instance Worker&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;one periodic cycle, stages are serial&lt;br&gt;only fetch stage may run source adapters in parallel&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#E7F5DF;strokeColor=#7FA66A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="375" y="150" width="310" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="stageFetch" value="1. fetch_sources()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;adapter lookback / limit&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="390" y="255" width="280" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="stageInsert" value="2. Insert Raw Items&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;unique(source_key, source_item_key)&lt;br&gt;exists -&amp;gt; skip&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="390" y="330" width="280" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="stageProcess" value="3. process_raw_items()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;download PDFs, LLM filter + briefing&lt;br&gt;create policy_update or discard&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="390" y="415" width="280" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="stageExtract" value="4. extract_policy_impacts()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;call black-box extract_policy_impact()&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="390" y="510" width="280" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="stageActions" value="5. calculate_approved_actions()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;after human approval&lt;br&gt;call calculate_user_actions() per user&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="390" y="590" width="280" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="stageEmail" value="6. send_pending_emails()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;FOR UPDATE SKIP LOCKED&lt;br&gt;best-effort external side effect&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="390" y="685" width="280" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="realtimeTriggers" value="Best-effort realtime triggers&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;policy_update created -&amp;gt; extract(policy_update_id)&lt;br&gt;approve -&amp;gt; calculate + send(policy_update_id)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F2F7EE;strokeColor=#7FA66A;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="375" y="785" width="310" height="58" as="geometry" />
+        </mxCell>
+
+        <mxCell id="blackbox" value="Policy Impact Black Box&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;local module owned separately&lt;br&gt;extract_policy_impact()&lt;br&gt;get / save / validate policy_impact&lt;br&gt;calculate_user_actions()&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF1D6;strokeColor=#CC8A00;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="755" y="100" width="320" height="128" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dbContainer" value="Shared Postgres Database" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F4F6FA;strokeColor=#6B778D;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="755" y="270" width="320" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="radarTables" value="Radar tables&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;radar_raw_source_items&lt;br&gt;radar_policy_updates&lt;br&gt;radar_user_actions&lt;br&gt;radar_user_action_products&lt;br&gt;radar_user_action_items&lt;br&gt;radar_notification_recipients&lt;br&gt;radar_email_deliveries&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#6B778D;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="330" width="270" height="168" as="geometry" />
+        </mxCell>
+        <mxCell id="impactTables" value="Black-box policy impact tables&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;schema owned by black-box&lt;br&gt;stored in the same DB&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF8E8;strokeColor=#CC8A00;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="520" width="270" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="classificationTables" value="Existing classification data&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;users&lt;br&gt;products / HTS candidates&lt;br&gt;sandbox / tariff calculation data&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#EAF3FF;strokeColor=#6EA8E5;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="628" width="270" height="104" as="geometry" />
+        </mxCell>
+
+        <mxCell id="classificationContainer" value="classification-backend" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F7F9FC;strokeColor=#516482;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1125" y="100" width="340" height="620" as="geometry" />
+        </mxCell>
+        <mxCell id="migrationOwner" value="Migration owner&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;creates and maintains radar_* schema&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="150" width="290" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="authApi" value="Existing Auth + User Context" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="230" width="290" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="recentApi" value="Recent Policy Updates API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;list / detail, source filter, no impact exposed&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="295" width="290" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="actionApi" value="Actions API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;user action cards, items, completion&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="375" width="290" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="recipientApi" value="Recipients + Unsubscribe API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;active / unsubscribed / deleted&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="455" width="290" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="reviewApi" value="Review API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;REVIEW_TOKEN&lt;br&gt;view / edit / approve / reject policy impact&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF8E8;strokeColor=#CC8A00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="535" width="290" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="executionApi" value="Classification / Sandbox / Calculator&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;executes reclassify_product / recalculate_tariff&lt;br&gt;Radar only supplies action context&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#EAF3FF;strokeColor=#6EA8E5;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="630" width="290" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="frontendContainer" value="Frontend / Browser" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#FAFAFA;strokeColor=#8B95A7;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="100" width="250" height="340" as="geometry" />
+        </mxCell>
+        <mxCell id="radarUi" value="Compliance Radar UI&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;Recent Updates + Actions + Recipients&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#8B95A7;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="155" width="210" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="reviewUi" value="Review UI&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;token-authenticated internal reviewer&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF8E8;strokeColor=#CC8A00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="240" width="210" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="unsubscribePage" value="Unsubscribe Page&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;frontend URL from env&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#8B95A7;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="320" width="210" height="62" as="geometry" />
+        </mxCell>
+
+        <mxCell id="emailContainer" value="Email Delivery" style="swimlane;html=1;startSize=34;rounded=1;whiteSpace=wrap;fillColor=#FDF7F7;strokeColor=#B35B5B;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="500" width="250" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="emailProvider" value="Email Provider&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;timeout required&lt;br&gt;best-effort exactly-once&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#B35B5B;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="555" width="210" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="recipientInbox" value="Recipient Inbox&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;Impact Action notification only&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#B35B5B;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="645" width="210" height="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="notGov" value="gov-backend is out of scope&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;No dependency, no code changes, no shared pipeline&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F1F1F1;strokeColor=#B8B8B8;fontSize=13;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="40" y="790" width="270" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="legend" value="Core contract&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;Radar and Classification share the same Postgres schema.&lt;br&gt;No shared package in 1.0. Database schema + status machines are the integration contract.&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F7F9FC;strokeColor=#A8B3C7;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="755" y="810" width="710" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eConfigFetch" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#6EA8E5;" edge="1" parent="1" source="sourceConfig" target="stageFetch">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eSourcesFetch" value="fetch" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#6EA8E5;fontSize=11;" edge="1" parent="1" source="externalSources" target="stageFetch">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ePdfsProcess" value="download on demand" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#D9A441;fontSize=11;" edge="1" parent="1" source="attachments" target="stageProcess">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eWorkerDb" value="read / write radar_*" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#5B7F4D;fontSize=11;" edge="1" parent="1" source="radarContainer" target="dbContainer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eWorkerBlackbox" value="extract + calculate" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#CC8A00;fontSize=11;" edge="1" parent="1" source="stageExtract" target="blackbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eActionsBlackbox" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#CC8A00;" edge="1" parent="1" source="stageActions" target="blackbox">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="725" y="615" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eBlackboxDb" value="own impact tables" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#CC8A00;fontSize=11;" edge="1" parent="1" source="blackbox" target="impactTables">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eClassDb" value="API reads / writes" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#516482;fontSize=11;" edge="1" parent="1" source="classificationContainer" target="dbContainer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eReviewBlackbox" value="review helper calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#CC8A00;fontSize=11;" edge="1" parent="1" source="reviewApi" target="blackbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eFrontendBackend" value="HTTP APIs" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#516482;fontSize=11;" edge="1" parent="1" source="frontendContainer" target="classificationContainer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eGoExecute" value="Go: reclassify / recalculate" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#6EA8E5;fontSize=11;" edge="1" parent="1" source="radarUi" target="executionApi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eEmailProvider" value="send after commit" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#B35B5B;fontSize=11;" edge="1" parent="1" source="stageEmail" target="emailProvider">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eProviderInbox" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#B35B5B;" edge="1" parent="1" source="emailProvider" target="recipientInbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eUnsubscribe" value="unsubscribe link" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#B35B5B;fontSize=11;dashed=1;" edge="1" parent="1" source="recipientInbox" target="unsubscribePage">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
