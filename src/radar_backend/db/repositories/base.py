@@ -7,5 +7,9 @@ from radar_backend.db.connection import Database
 
 @dataclass(frozen=True)
 class BaseRepository:
-    db: Database
+    """Base class for table repositories.
 
+    Query methods must receive an explicit connection from the caller.
+    """
+
+    db: Database

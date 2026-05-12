@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from psycopg import Connection
@@ -11,6 +13,7 @@ from radar_backend.config import Settings
 @dataclass
 class Database:
     settings: Settings
+    _pool: ConnectionPool[Connection] = field(init=False)
     _opened: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
@@ -22,12 +25,29 @@ class Database:
             open=False,
         )
 
-    @property
-    def pool(self) -> ConnectionPool[Connection]:
-        return self._pool
+    @contextmanager
+    def connection(self) -> Iterator[Connection]:
+        self._require_open()
+        with self._pool.connection() as conn:
+            yield conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[Connection]:
+        self._require_open()
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                yield conn
 
     def open(self) -> None:
-        self._pool.open(wait=True)
+        if self._opened:
+            return
+
+        try:
+            self._pool.open(wait=True)
+        except Exception:
+            self._pool.close()
+            raise
+
         self._opened = True
 
     def close(self) -> None:
@@ -36,4 +56,9 @@ class Database:
             self._opened = False
 
     def check(self) -> None:
+        self._require_open()
         self._pool.check()
+
+    def _require_open(self) -> None:
+        if not self._opened:
+            raise RuntimeError("database pool is not open")

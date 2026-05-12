@@ -22,7 +22,7 @@
           <mxGeometry x="65" y="385" width="220" height="72" as="geometry" />
         </mxCell>
 
-        <mxCell id="radarContainer" value="radar-backend" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F8FBF4;strokeColor=#7FA66A;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="radarContainer" value="radar-backend&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;worker + radar_* migrations&lt;/font&gt;" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F8FBF4;strokeColor=#7FA66A;fontSize=16;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="350" y="100" width="360" height="760" as="geometry" />
         </mxCell>
         <mxCell id="singleWorker" value="Single-instance Worker&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;one periodic cycle, stages are serial&lt;br&gt;only fetch stage may run source adapters in parallel&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#E7F5DF;strokeColor=#7FA66A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
@@ -34,16 +34,16 @@
         <mxCell id="stagePolicyUpdates" value="2. create_policy_updates()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;PDF context + LLM filter / briefing&lt;br&gt;create policy update or discard raw item&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="390" y="330" width="280" height="76" as="geometry" />
         </mxCell>
-        <mxCell id="stageImpacts" value="3. prepare_policy_impacts()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;call extract_policy_impact()&lt;br&gt;create review-ready webhook event&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="stageImpacts" value="3. create_policy_impacts()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;call extract_policy_impact()&lt;br&gt;create review-ready webhook event&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="390" y="425" width="280" height="76" as="geometry" />
         </mxCell>
-        <mxCell id="stageWebhooks" value="4. send_operational_webhooks()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;review-ready + attempt-exhausted&lt;br&gt;throttled by last_notified_at&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="stageWebhooks" value="OperationalWebhookService&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;called by review-ready / attempt-exhausted paths&lt;br&gt;throttled by last_notified_at&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F2F7EE;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="390" y="520" width="280" height="76" as="geometry" />
         </mxCell>
-        <mxCell id="stageActions" value="5. create_user_actions()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;after human approval&lt;br&gt;call calculate_user_actions() per target user&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="stageActions" value="4. create_user_actions()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;after human approval&lt;br&gt;call calculate_user_actions() per target user&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="390" y="615" width="280" height="76" as="geometry" />
         </mxCell>
-        <mxCell id="stageEmail" value="6. send_action_notifications()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;one delivery at a time&lt;br&gt;checks latest recipient status&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="stageEmail" value="5. send_action_notifications()&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;one delivery at a time&lt;br&gt;checks latest recipient status&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#7FA66A;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="390" y="710" width="280" height="70" as="geometry" />
         </mxCell>
         <mxCell id="stateDrivenRecovery" value="State-driven recovery&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;each cycle picks up newly eligible records&lt;br&gt;and unfinished / failed records within retry limits&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F2F7EE;strokeColor=#7FA66A;fontSize=12;" vertex="1" parent="1">
@@ -70,7 +70,7 @@
         <mxCell id="classificationContainer" value="classification-backend" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F7F9FC;strokeColor=#516482;fontSize=16;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1125" y="100" width="340" height="620" as="geometry" />
         </mxCell>
-        <mxCell id="migrationOwner" value="Migration owner&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;creates and maintains radar_* schema&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="migrationOwner" value="HTTP/API owner&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;user APIs, review API, unsubscribe API&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="1150" y="150" width="290" height="62" as="geometry" />
         </mxCell>
         <mxCell id="authApi" value="Existing Auth + User Context" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">

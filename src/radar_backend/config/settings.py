@@ -16,7 +16,7 @@ def load_dotenv(path: Path) -> None:
 
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        value = _strip_outer_quotes(value.strip())
         if key and key not in os.environ:
             os.environ[key] = value
 
@@ -61,6 +61,12 @@ def _required(name: str) -> str:
     value = os.getenv(name)
     if value is None or not value.strip():
         raise ValueError(f"{name} is required")
+    return value
+
+
+def _strip_outer_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
     return value
 
 

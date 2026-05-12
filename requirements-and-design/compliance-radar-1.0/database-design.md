@@ -154,7 +154,7 @@ radar_webhook_events N -> operational entities
 | --- | --- | --- |
 | Collect source items | 无 durable retry 表；source adapter 每轮按配置抓取窗口重新拉取 | 不入库 |
 | Create policy updates | `radar_raw_source_items.policy_update_status IN ('pending', 'failed') AND policy_update_attempt_count < 3` | `radar_raw_source_items.policy_update_attempt_count` |
-| Prepare policy impacts | `radar_policy_updates.policy_extract_status IN ('pending', 'failed') AND policy_extract_attempt_count < 3` | `radar_policy_updates.policy_extract_attempt_count` |
+| Create policy impacts | `radar_policy_updates.policy_extract_status IN ('pending', 'failed') AND policy_extract_attempt_count < 3` | `radar_policy_updates.policy_extract_attempt_count` |
 | Create user actions | `radar_policy_updates.policy_review_status = 'approved' AND action_calculate_status IN ('pending', 'failed') AND action_calculate_attempt_count < 3` | `radar_policy_updates.action_calculate_attempt_count` |
 | Send action notification emails | `radar_email_deliveries.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_email_deliveries.attempt_count` |
 

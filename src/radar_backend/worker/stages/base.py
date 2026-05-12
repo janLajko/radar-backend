@@ -12,13 +12,8 @@ class StageResult:
     processed_count: int = 0
 
 
-class RunnableStep(Protocol):
+class WorkerStage(Protocol):
     name: str
 
     def run(self, context: WorkerContext) -> StageResult:
         ...
-
-
-class WorkerStage(RunnableStep, Protocol):
-    pass
-

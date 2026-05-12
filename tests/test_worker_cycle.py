@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-import pytest
-
 from radar_backend.worker.cycle import PeriodicCycle, build_cycle
 from radar_backend.worker.stages.base import StageResult
 
@@ -14,7 +12,7 @@ class FakeContext:
     logger: logging.Logger
 
 
-class RecordingStep:
+class RecordingStage:
     def __init__(self, name: str, calls: list[str], fail: bool = False) -> None:
         self.name = name
         self._calls = calls
@@ -27,12 +25,12 @@ class RecordingStep:
         return StageResult(stage_name=self.name, processed_count=1)
 
 
-def test_periodic_cycle_runs_steps_in_order() -> None:
+def test_periodic_cycle_runs_stages_in_order() -> None:
     calls: list[str] = []
     cycle = PeriodicCycle(
-        steps=[
-            RecordingStep("first", calls),
-            RecordingStep("second", calls),
+        stages=[
+            RecordingStage("first", calls),
+            RecordingStage("second", calls),
         ]
     )
 
@@ -42,30 +40,29 @@ def test_periodic_cycle_runs_steps_in_order() -> None:
     assert [result.stage_name for result in results] == ["first", "second"]
 
 
-def test_periodic_cycle_stops_on_step_exception() -> None:
+def test_periodic_cycle_continues_after_stage_exception() -> None:
     calls: list[str] = []
     cycle = PeriodicCycle(
-        steps=[
-            RecordingStep("first", calls),
-            RecordingStep("second", calls, fail=True),
-            RecordingStep("third", calls),
+        stages=[
+            RecordingStage("first", calls),
+            RecordingStage("second", calls, fail=True),
+            RecordingStage("third", calls),
         ]
     )
 
-    with pytest.raises(RuntimeError, match="second"):
-        cycle.run_once(FakeContext(logger=logging.getLogger(__name__)))
+    results = cycle.run_once(FakeContext(logger=logging.getLogger(__name__)))
 
-    assert calls == ["first", "second"]
+    assert calls == ["first", "second", "third"]
+    assert [result.stage_name for result in results] == ["first", "third"]
 
 
-def test_default_cycle_step_order() -> None:
+def test_default_cycle_stage_order() -> None:
     cycle = build_cycle()
 
-    assert [step.name for step in cycle.steps] == [
+    assert [stage.name for stage in cycle.stages] == [
         "collect_source_items",
         "create_policy_updates",
         "create_policy_impacts",
-        "send_operational_webhooks",
         "create_user_actions",
         "send_action_notifications",
     ]

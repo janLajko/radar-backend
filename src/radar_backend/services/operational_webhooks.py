@@ -1,13 +1,33 @@
 from __future__ import annotations
 
-from radar_backend.worker.context import WorkerContext
-from radar_backend.worker.stages.base import StageResult
+from dataclasses import dataclass
+from typing import Literal
+
+from radar_backend.db import Database
+from radar_backend.domain import WebhookEntityType
 
 
+@dataclass(frozen=True)
+class OperationalWebhookResult:
+    status: Literal["sent", "skipped", "failed"]
+
+
+@dataclass(frozen=True)
 class OperationalWebhookService:
-    name = "send_operational_webhooks"
+    db: Database
 
-    def run(self, context: WorkerContext) -> StageResult:
-        context.logger.info("service skeleton has no operational webhook implementation yet")
-        return StageResult(stage_name=self.name)
+    def notify_policy_impact_ready_for_review(
+        self,
+        *,
+        policy_update_id: int,
+        review_url: str,
+    ) -> OperationalWebhookResult:
+        raise NotImplementedError("notify_policy_impact_ready_for_review is not implemented yet")
 
+    def notify_attempt_exhausted(
+        self,
+        *,
+        entity_type: WebhookEntityType,
+        entity_id: int,
+    ) -> OperationalWebhookResult:
+        raise NotImplementedError("notify_attempt_exhausted is not implemented yet")
