@@ -1,6 +1,6 @@
 # Compliance Radar BLB 1.0 数据库设计
 
-最后更新：2026-05-08
+最后更新：2026-05-12
 
 本文档描述 Compliance Radar BLB 1.0 的数据库表结构设计。本文只覆盖 Radar 自有表；黑盒 Policy Impact 表由黑盒 owner 设计，不在本文中展开，但黑盒表必须能通过 `policy_update_id` 与 `radar_policy_updates.id` 关联。
 
@@ -28,10 +28,9 @@
 | `radar_raw_source_items` | 保存从外部 source 抓取到的标准化原始条目 | `radar-backend` | `radar-backend` |
 | `radar_policy_updates` | 保存进入 Recent Policy Updates 的政策更新 | `radar-backend`、`classification-backend` review API | `classification-backend`、`radar-backend`、黑盒 |
 | `radar_user_actions` | 用户级 action 记录，一位用户对一个 policy update 最多一条；对应前端一张 action card | `radar-backend`、`classification-backend` completion API | `classification-backend` |
-| `radar_user_action_products` | 用户 action 下的 affected products 快照 | `radar-backend` | `classification-backend` |
-| `radar_user_action_items` | 用户 action 下的 suggested action items | `radar-backend`、`classification-backend` completion API | `classification-backend` |
 | `radar_notification_recipients` | 用户配置的邮件通知收件人 | `classification-backend` | `classification-backend`、`radar-backend` |
 | `radar_email_deliveries` | 每封 Impact Action 邮件的发送记录与重试状态 | `radar-backend` | `radar-backend` |
+| `radar_webhook_events` | 内部运营 webhook outbox，用于 review 提醒和 attempt exhausted 告警 | `radar-backend` | `radar-backend` |
 
 ## 3. 表关系总览
 
@@ -42,12 +41,12 @@ radar_raw_source_items 1 -> 0..1 radar_policy_updates
 
 radar_policy_updates 1 -> 0..N radar_user_actions
 radar_user_actions N -> 1 users
-radar_user_actions 1 -> N radar_user_action_products
-radar_user_actions 1 -> N radar_user_action_items
 radar_user_actions 1 -> N radar_email_deliveries
 
 radar_notification_recipients N -> 1 users
 radar_email_deliveries N -> 1 radar_notification_recipients
+
+radar_webhook_events N -> operational entities
 ```
 
 关系读法：
@@ -56,20 +55,20 @@ radar_email_deliveries N -> 1 radar_notification_recipients
 - `radar_user_actions N -> 1 users`：这里的 `N` 来自同一个用户可能被多个 policy updates 影响，因此会拥有多条用户 action 记录。
 - `radar_user_actions 1 -> N radar_email_deliveries`：这里的 `N` 来自同一条用户 action 需要发给该用户配置的多个 active recipients。
 - `radar_email_deliveries N -> 1 radar_notification_recipients`：这里的 `N` 来自同一个 recipient 会随着不同 user actions 的产生，累计收到多封 action 邮件。
+- `radar_webhook_events N -> operational entities`：这里的 `N` 来自 webhook event 可以指向不同处理单元，例如 raw item 转 policy update、policy impact 抽取、user action 计算、email delivery。
 
 其中：
 
 - `radar_policy_updates.raw_source_item_id` 对 `radar_raw_source_items.id` 加唯一约束，保证 1.0 中 raw item 与 policy update 一对一。
 - 黑盒 policy impact 表由黑盒 owner 维护；Radar 自有表只保存 `radar_policy_updates` 上的抽取、审核与 user actions 计算状态。
 - `radar_user_actions(user_id, policy_update_id)` 加唯一约束，保证一个用户对一个 policy update 最多一条 action 记录。
-- `radar_user_action_products(user_action_id, product_uid)` 加唯一约束，避免同一 action 下重复产品。
-- `radar_user_action_items(user_action_id, action_type)` 加唯一约束，符合 1.0 只有两个 action type 的产品约定。
 - `radar_email_deliveries(user_action_id, recipient_id)` 加唯一约束，保证同一 action 对同一个 recipient 最多一封邮件。
+- `radar_webhook_events(event_type, entity_type, entity_id, channel)` 加唯一约束，保证同一个运营事件按实体去重。
 
 外部表依赖：
 
 - `users.id`：来自 `classification-backend` 现有用户表，当前代码中为 `bigint`。
-- 产品数据通过 `product_uid` 以快照形式保存。`classification-backend` 现有产品链路已经以 `product_uid` 作为产品身份；1.0 建议不加硬外键，避免产品表演进影响历史 action 展示与跳转。
+- 产品数据通过 `radar_user_actions.affected_products` 内的 `product_uid` 以快照形式保存。`classification-backend` 现有产品链路已经以 `product_uid` 作为产品身份；1.0 建议不加硬外键，避免产品表演进影响历史 action 展示与跳转。
 
 ## 4. 状态机
 
@@ -96,7 +95,6 @@ radar_email_deliveries N -> 1 radar_notification_recipients
 | --- | --- | --- |
 | `pending` | 尚未审核过 | 当 `policy_extract_status = succeeded` 时可审核 |
 | `approved` | 人工审核通过 | 允许进入 user action 计算 |
-| `rejected` | 人工审核拒绝 | 不进入 user action 计算 |
 
 ### 4.4 `radar_policy_updates.action_calculate_status`
 
@@ -113,12 +111,12 @@ radar_email_deliveries N -> 1 radar_notification_recipients
 | `action_needed` | 该用户 action 中至少还有一个 item 未完成 |
 | `completed` | 该用户 action 下所有 action items 均已完成 |
 
-### 4.6 `radar_user_action_items.status`
+### 4.6 `radar_user_actions.action_items[].status`
 
 | 枚举值 | 含义 |
 | --- | --- |
-| `action_needed` | 该 action item 未完成 |
-| `completed` | 该 action item 已完成 |
+| `action_needed` | 该 JSON action item 未完成 |
+| `completed` | 该 JSON action item 已完成 |
 
 ### 4.7 `radar_notification_recipients.status`
 
@@ -136,7 +134,14 @@ radar_email_deliveries N -> 1 radar_notification_recipients
 | `sent` | 已发送成功 | 否 |
 | `failed` | 发送失败 | 是，若 `attempt_count < 3` |
 
-### 4.9 Durable 重试扫描条件
+### 4.9 `radar_webhook_events.event_type`
+
+| 枚举值 | 含义 |
+| --- | --- |
+| `policy_impact_ready_for_review` | policy impact 已准备好，需要人工审核 |
+| `attempt_exhausted` | 某条记录 durable attempt_count 达到上限，需要人工排查 |
+
+### 4.10 Durable 重试扫描条件
 
 周期任务的每个 stage 都是 state-driven：既处理本轮新产生的数据，也回补之前未完成或失败的数据。1.0 中 durable 层统一最多尝试 3 次，`attempt_count` 达到 3 后不再自动处理；是否人工修数据由数据库操作解决，不提供管理 API。
 
@@ -148,7 +153,9 @@ radar_email_deliveries N -> 1 radar_notification_recipients
 | Create user actions | `radar_policy_updates.policy_review_status = 'approved' AND action_calculate_status IN ('pending', 'failed') AND action_calculate_attempt_count < 3` | `radar_policy_updates.action_calculate_attempt_count` |
 | Send action notification emails | `radar_email_deliveries.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_email_deliveries.attempt_count` |
 
-计数建议在进入对应重型操作前递增。这样即使进程崩溃，也不会无限重试同一条问题数据；如果操作已经对外产生副作用，后续仍按各 stage 的幂等约束处理。
+计数建议在进入对应重型操作前递增并尽早持久化。这样正常失败会被 durable retry 控制住；如果进程在外部副作用完成后、状态写回前崩溃，后续仍按各 stage 的幂等或重复发送语义处理。
+
+当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 写入或更新一条 `attempt_exhausted` webhook event。Webhook 是否实际发送由 `radar_webhook_events.last_notified_at` 和通知间隔控制。
 
 ## 5. 表结构详情
 
@@ -229,7 +236,7 @@ PRIMARY KEY (id)
 FOREIGN KEY (raw_source_item_id) REFERENCES radar_raw_source_items(id)
 UNIQUE (raw_source_item_id)
 CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed'))
-CHECK (policy_review_status IN ('pending', 'approved', 'rejected'))
+CHECK (policy_review_status IN ('pending', 'approved'))
 CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed'))
 CHECK (policy_extract_attempt_count >= 0)
 CHECK (action_calculate_attempt_count >= 0)
@@ -266,12 +273,12 @@ action_calculate_status = pending
 审核约束由应用层保证：
 
 ```text
-approve/reject only if:
+approve only if:
 policy_extract_status = succeeded
 AND policy_review_status = pending
 ```
 
-1.0 不单独保存 `approved_by/rejected_by/approved_at/rejected_at`。Review API 使用 token 鉴权而不是 reviewer 用户身份；如果未来需要严格审计，应新增 review audit 表，而不是复用 `updated_at`。
+1.0 不单独保存 `approved_by/approved_at`。Review API 不做 token 鉴权；如果未来需要严格审计，应新增 review audit 表，而不是复用 `updated_at`。
 
 ### 5.3 `radar_user_actions`
 
@@ -283,6 +290,8 @@ AND policy_review_status = pending
 | `user_id` | `bigint` | 是 |  | FK to users；unique 组合项；建议索引 | 用户 ID |
 | `policy_update_id` | `bigint` | 是 |  | FK；unique 组合项；建议索引 | 对应 policy update |
 | `status` | `text` | 是 | `'action_needed'` | check enum；建议索引 | 用户 action 聚合状态 |
+| `affected_products` | `jsonb` | 是 | `'[]'::jsonb` | check array | 受影响产品快照，用于展示和构造 action 跳转 |
+| `action_items` | `jsonb` | 是 | `'[]'::jsonb` | check array | 建议 action items，最多包含 `reclassify_product` / `recalculate_tariff` |
 | `completed_at` | `timestamptz` | 否 |  |  | 所有 items 完成时的时间；取消完成时清空 |
 | `completed_by` | `bigint` | 否 |  | FK to users 可选 | 完成该 card 的用户；1.0 通常是当前登录用户 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
@@ -297,6 +306,8 @@ FOREIGN KEY (user_id) REFERENCES users(id)
 FOREIGN KEY (completed_by) REFERENCES users(id)
 UNIQUE (user_id, policy_update_id)
 CHECK (status IN ('action_needed', 'completed'))
+CHECK (jsonb_typeof(affected_products) = 'array')
+CHECK (jsonb_typeof(action_items) = 'array')
 ```
 
 建议索引：
@@ -311,97 +322,36 @@ ON radar_user_actions (policy_update_id);
 
 状态同步规则：
 
-- 如果所有 `radar_user_action_items` 都是 `completed`，则 `radar_user_actions.status = completed`。
+- 如果 `action_items` 中所有 items 都是 `completed`，则 `radar_user_actions.status = completed`。
 - 如果任一 item 是 `action_needed`，则 `radar_user_actions.status = action_needed`。
-- item completion API 必须在同一事务内更新 item 与 card。
+- item completion API 必须在同一事务内更新 `action_items` JSON 与顶层 `status/completed_at/completed_by`。
+- `affected_products` 和 `action_items` 的内部 shape 由应用层校验；数据库只做 JSON array 级别约束。
 
-### 5.4 `radar_user_action_products`
+建议 JSON shape：
 
-保存用户 action 下 affected products 的快照。它用于展示，也用于前端构造 reclassify/recalculate 的跳转参数。
-
-| 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
-| --- | --- | --- | --- | --- | --- |
-| `id` | `bigserial` | 是 | 自增 | PK | 主键 |
-| `user_action_id` | `bigint` | 是 |  | FK；unique 组合项；建议索引 | 所属用户 action |
-| `product_uid` | `text` | 是 |  | 建议索引 | classification/sandbox 中可识别的产品标识 |
-| `product_name` | `text` | 是 |  |  | 产品名称快照 |
-| `hts_code` | `text` | 否 |  |  | HTS code 快照 |
-| `applicable_action_types` | `text[]` | 是 |  | check 非空 | 该产品适用的 action types |
-| `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
-| `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
-
-约束：
-
-```sql
-PRIMARY KEY (id)
-FOREIGN KEY (user_action_id) REFERENCES radar_user_actions(id) ON DELETE CASCADE
-UNIQUE (user_action_id, product_uid)
-CHECK (cardinality(applicable_action_types) >= 1)
-CHECK (array_position(applicable_action_types, NULL) IS NULL)
-CHECK (applicable_action_types <@ ARRAY['reclassify_product', 'recalculate_tariff']::text[])
+```json
+{
+  "affected_products": [
+    {
+      "product_uid": "string",
+      "product_name": "string",
+      "hts_code": "string | null",
+      "suggested_actions": ["reclassify_product", "recalculate_tariff"]
+    }
+  ],
+  "action_items": [
+    {
+      "action_type": "reclassify_product",
+      "effective_date": "YYYY-MM-DD | null",
+      "status": "action_needed"
+    }
+  ]
+}
 ```
 
-建议索引：
+其中 `action_items[].action_type` 最多两种且不可重复；`affected_products[].suggested_actions` 只能引用已有 action type。后端不做 `effective_date + 5 days` gating，该逻辑由前端决定。
 
-```sql
-CREATE INDEX idx_radar_user_action_products_action
-ON radar_user_action_products (user_action_id);
-
-CREATE INDEX idx_radar_user_action_products_product_uid
-ON radar_user_action_products (product_uid);
-```
-
-说明：
-
-- `product_uid` 不建议在 1.0 加硬外键到产品表，避免历史 action 被产品表演进影响。
-- `applicable_action_types` 对应 API 里的 `affected_products[].suggested_actions` 语义；数据库命名刻意避开 `radar_user_action_items` 的 suggested action item 概念。
-- `match_dimension` / `match_reason` 暂不纳入 1.0 必需字段。
-
-### 5.5 `radar_user_action_items`
-
-保存用户 action 下的 suggested action items。1.0 只允许 `reclassify_product` 和 `recalculate_tariff` 两种 action type，因此同一用户 action 下每种 action type 最多一条 item。
-
-| 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
-| --- | --- | --- | --- | --- | --- |
-| `id` | `bigserial` | 是 | 自增 | PK | 主键 |
-| `user_action_id` | `bigint` | 是 |  | FK；unique 组合项；建议索引 | 所属用户 action |
-| `action_type` | `text` | 是 |  | check enum；建议索引 | 建议操作类型 |
-| `note` | `text` | 是 |  |  | 展示给用户的操作说明 |
-| `effective_date` | `date` | 否 |  |  | action 级生效日期；为空时 API 可 fallback 到 policy_update.effective_date |
-| `status` | `text` | 是 | `'action_needed'` | check enum；建议索引 | item 完成状态 |
-| `completed_at` | `timestamptz` | 否 |  |  | item 完成时间 |
-| `completed_by` | `bigint` | 否 |  | FK to users 可选 | 完成该 item 的用户 |
-| `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
-| `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
-
-约束：
-
-```sql
-PRIMARY KEY (id)
-FOREIGN KEY (user_action_id) REFERENCES radar_user_actions(id) ON DELETE CASCADE
-FOREIGN KEY (completed_by) REFERENCES users(id)
-UNIQUE (user_action_id, action_type)
-CHECK (action_type IN ('reclassify_product', 'recalculate_tariff'))
-CHECK (status IN ('action_needed', 'completed'))
-```
-
-建议索引：
-
-```sql
-CREATE INDEX idx_radar_user_action_items_action
-ON radar_user_action_items (user_action_id);
-
-CREATE INDEX idx_radar_user_action_items_status
-ON radar_user_action_items (status);
-```
-
-说明：
-
-- Completion 可逆。
-- Completion/uncompletion 不触发邮件。
-- 后端不做 `effective_date + 5 days` gating，该逻辑由前端决定。
-
-### 5.6 `radar_notification_recipients`
+### 5.4 `radar_notification_recipients`
 
 保存用户配置的 Impact Action 邮件通知收件人。
 
@@ -449,7 +399,7 @@ ON radar_notification_recipients (user_id, status);
 - 如果使用 `UNIQUE (user_id, lower(email))`，同一用户同一邮箱永远只有一行，最符合当前“deleted 可恢复、unsubscribed 不可普通恢复”的语义。
 - 如果未来需要保留同一邮箱多次添加历史，可再改为 partial unique，但 1.0 不需要。
 
-### 5.7 `radar_email_deliveries`
+### 5.5 `radar_email_deliveries`
 
 保存每封 Impact Action 邮件的发送记录。发送前使用 `FOR UPDATE SKIP LOCKED` 做同一 delivery 的竞态控制。
 
@@ -505,20 +455,6 @@ LIMIT 1
 FOR UPDATE SKIP LOCKED;
 ```
 
-如果要限制在某个 `policy_update_id`：
-
-```sql
-SELECT d.*
-FROM radar_email_deliveries d
-JOIN radar_user_actions a ON a.id = d.user_action_id
-WHERE d.status IN ('pending', 'failed')
-  AND d.attempt_count < 3
-  AND a.policy_update_id = :policy_update_id
-ORDER BY d.created_at
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
-```
-
 说明：
 
 - 不存 `last_error`。
@@ -526,6 +462,56 @@ FOR UPDATE SKIP LOCKED;
 - 发送前重新检查 recipient 是否 active。
 - 如果 recipient 已 unsubscribed/deleted，未发送 delivery 可删除。
 - SMTP accepted 但进程在写回 `sent` 前崩溃，可能导致后续重复发送；1.0 接受该 best-effort 语义。
+
+### 5.6 `radar_webhook_events`
+
+保存内部运营 webhook outbox。1.0 用于两类通知：policy impact ready for review，以及 durable attempt_count 达到上限后的人工排查告警。实际发送渠道暂定为 Lark Team。
+
+| 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `id` | `bigserial` | 是 | 自增 | PK | 主键 |
+| `event_type` | `text` | 是 |  | unique 组合项；check enum | 事件类型 |
+| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `raw_policy_update` / `policy_extract` / `action_calculate` / `email_delivery` |
+| `entity_id` | `bigint` | 是 |  | unique 组合项 | 关联实体 ID |
+| `channel` | `text` | 是 | `'lark_team'` | unique 组合项 | 通知渠道 |
+| `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照，例如 review URL、标题、失败类型 |
+| `last_notified_at` | `timestamptz` | 否 |  | 建议索引 | 最近一次成功通知时间 |
+| `notify_count` | `integer` | 是 | `0` | check `>= 0` | 成功通知次数 |
+| `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
+| `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
+
+约束：
+
+```sql
+PRIMARY KEY (id)
+UNIQUE (event_type, entity_type, entity_id, channel)
+CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted'))
+CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery'))
+CHECK (channel IN ('lark_team'))
+CHECK (jsonb_typeof(payload) = 'object')
+CHECK (notify_count >= 0)
+```
+
+建议索引：
+
+```sql
+CREATE INDEX idx_radar_webhook_events_notify_work
+ON radar_webhook_events (last_notified_at, created_at);
+
+CREATE INDEX idx_radar_webhook_events_entity
+ON radar_webhook_events (entity_type, entity_id);
+```
+
+发送规则：
+
+- 如果 `last_notified_at IS NULL`，允许发送。
+- 如果 `last_notified_at` 距离当前时间超过配置的通知间隔，允许再次发送。
+- 发送前重新检查业务实体仍需要通知：review event 只在 `policy_extract_status = succeeded` 且 `policy_review_status = pending` 时发送；attempt exhausted event 只在对应实体仍处于未解决状态时发送。
+- 如果业务实体已经不再需要通知，删除对应 webhook event。
+- 发送成功后更新 `last_notified_at` 并递增 `notify_count`。
+- 发送失败只写日志，不更新 `last_notified_at`；后续周期任务自然重试。
+
+`entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 
 ## 6. 关键事务边界
 
@@ -545,26 +531,22 @@ update radar_raw_source_items.policy_update_status = ingested
 同一事务内：
 
 ```text
-SELECT radar_policy_updates FOR UPDATE
-re-check action_calculate_status
-insert radar_user_actions
-insert radar_user_action_products
-insert radar_user_action_items
+insert radar_user_actions with affected_products and action_items JSON for accumulated candidates
 insert radar_email_deliveries for active recipients
 update radar_policy_updates.action_calculate_status = succeeded
 ```
 
-如果计算失败，只在 `action_calculate_status` 仍等于本事务开始计算时看到的状态时，将其更新为 `failed`；不得覆盖已经被另一条 pipeline 写成 `succeeded` 的状态。
+如果计算失败，设置 `action_calculate_status = failed`，不写入 user actions 或 email deliveries。若失败后 `action_calculate_attempt_count` 已达到上限，则写入或更新 `attempt_exhausted` webhook event。
 
 邮件发送必须在事务提交后进行。
 
-### 6.3 Action Item Completion
+### 6.3 Action Completion
 
 同一事务内：
 
 ```text
-verify action item belongs to current user
-update radar_user_action_items
+verify action belongs to current user
+update radar_user_actions.action_items JSON
 recompute parent radar_user_actions.status
 update radar_user_actions completed_at/completed_by if needed
 ```
@@ -602,7 +584,7 @@ ALTER TABLE radar_policy_updates
   ADD CONSTRAINT chk_radar_policy_extract_status
   CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed')),
   ADD CONSTRAINT chk_radar_policy_review_status
-  CHECK (policy_review_status IN ('pending', 'approved', 'rejected')),
+  CHECK (policy_review_status IN ('pending', 'approved')),
   ADD CONSTRAINT chk_radar_action_calculate_status
   CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed')),
   ADD CONSTRAINT chk_radar_policy_extract_attempt_count
@@ -614,21 +596,11 @@ ALTER TABLE radar_policy_updates
 
 ALTER TABLE radar_user_actions
   ADD CONSTRAINT chk_radar_user_actions_status
-  CHECK (status IN ('action_needed', 'completed'));
-
-ALTER TABLE radar_user_action_products
-  ADD CONSTRAINT chk_radar_user_action_products_applicable_action_types
-  CHECK (
-    cardinality(applicable_action_types) >= 1
-    AND array_position(applicable_action_types, NULL) IS NULL
-    AND applicable_action_types <@ ARRAY['reclassify_product', 'recalculate_tariff']::text[]
-  );
-
-ALTER TABLE radar_user_action_items
-  ADD CONSTRAINT chk_radar_user_action_items_action_type
-  CHECK (action_type IN ('reclassify_product', 'recalculate_tariff')),
-  ADD CONSTRAINT chk_radar_user_action_items_status
-  CHECK (status IN ('action_needed', 'completed'));
+  CHECK (status IN ('action_needed', 'completed')),
+  ADD CONSTRAINT chk_radar_user_actions_affected_products_array
+  CHECK (jsonb_typeof(affected_products) = 'array'),
+  ADD CONSTRAINT chk_radar_user_actions_action_items_array
+  CHECK (jsonb_typeof(action_items) = 'array');
 
 ALTER TABLE radar_notification_recipients
   ADD CONSTRAINT chk_radar_notification_recipients_status
@@ -639,6 +611,18 @@ ALTER TABLE radar_email_deliveries
   CHECK (status IN ('pending', 'sent', 'failed')),
   ADD CONSTRAINT chk_radar_email_deliveries_attempt_count
   CHECK (attempt_count >= 0);
+
+ALTER TABLE radar_webhook_events
+  ADD CONSTRAINT chk_radar_webhook_events_event_type
+  CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
+  ADD CONSTRAINT chk_radar_webhook_events_entity_type
+  CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+  ADD CONSTRAINT chk_radar_webhook_events_channel
+  CHECK (channel IN ('lark_team')),
+  ADD CONSTRAINT chk_radar_webhook_events_payload_object
+  CHECK (jsonb_typeof(payload) = 'object'),
+  ADD CONSTRAINT chk_radar_webhook_events_notify_count
+  CHECK (notify_count >= 0);
 ```
 
 ### 7.2 Unique Constraints / Indexes
@@ -656,14 +640,6 @@ ALTER TABLE radar_user_actions
   ADD CONSTRAINT uq_radar_user_actions_user_policy
   UNIQUE (user_id, policy_update_id);
 
-ALTER TABLE radar_user_action_products
-  ADD CONSTRAINT uq_radar_user_action_products_action_product
-  UNIQUE (user_action_id, product_uid);
-
-ALTER TABLE radar_user_action_items
-  ADD CONSTRAINT uq_radar_user_action_items_action_type
-  UNIQUE (user_action_id, action_type);
-
 ALTER TABLE radar_email_deliveries
   ADD CONSTRAINT uq_radar_email_deliveries_action_recipient
   UNIQUE (user_action_id, recipient_id);
@@ -674,6 +650,10 @@ ALTER TABLE radar_notification_recipients
 
 CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
 ON radar_notification_recipients (user_id, lower(email));
+
+ALTER TABLE radar_webhook_events
+  ADD CONSTRAINT uq_radar_webhook_events_event_entity_channel
+  UNIQUE (event_type, entity_type, entity_id, channel);
 ```
 
 ## 8. 实现阶段仍需确认的问题

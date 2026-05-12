@@ -1,6 +1,6 @@
 # Compliance Radar BLB 1.0 时序图
 
-最后更新：2026-05-08
+最后更新：2026-05-12
 
 本文档使用 https://sequencediagram.org/ 支持的文本格式编写。每个代码块是一张独立时序图，可以单独复制到 sequencediagram.org 中渲染。
 
@@ -13,6 +13,7 @@ title 1. Periodic Cycle Overview
 
 participant Scheduler
 participant RadarWorker
+participant LarkTeam
 participant Reviewer
 
 Scheduler->RadarWorker: run_periodic_cycle()
@@ -27,14 +28,16 @@ note right of RadarWorker: Each raw item is evaluated for the Radar feed\nReleva
 RadarWorker->RadarWorker: Stage 3. Prepare policy impacts for review
 note right of RadarWorker: Each policy update is turned into structured impact data\nso a reviewer can validate what the policy affects
 
-RadarWorker-->Reviewer: policy impact ready for review
-note right of Reviewer: Human approval is required\nbefore user actions can be created
-Reviewer-->RadarWorker: policy impact approved or rejected
+RadarWorker->RadarWorker: Stage 4. Send operational webhooks
+note right of RadarWorker: Review-ready and attempt-exhausted events are sent to Lark\nRepeated notifications are throttled by last_notified_at
+RadarWorker-->LarkTeam: review links and operational alerts
+LarkTeam-->Reviewer: policy impact ready for review
+note right of Reviewer: Human approval is required\nbefore user actions can be created\nApproval only changes review status
 
-RadarWorker->RadarWorker: Stage 4. Create user actions
+RadarWorker->RadarWorker: Stage 5. Create user actions
 note right of RadarWorker: Only approved policy impacts move forward\nActions are calculated separately for each target user
 
-RadarWorker->RadarWorker: Stage 5. Send action notification emails
+RadarWorker->RadarWorker: Stage 6. Send action notification emails
 note right of RadarWorker: New user actions create email deliveries\nEmail sending happens after actions are committed
 
 note right of RadarWorker: Cycle summary:\n- Every cycle is state-driven\n- Each stage picks up newly eligible records\nand unfinished or failed records within retry limits
@@ -119,6 +122,9 @@ loop each selected raw item
     alt PDF still failed
       PDFDownloader-->RadarWorker: failure
       RadarWorker->SharedDB: set policy_update_status = failed
+      opt policy_update_attempt_count reached 3
+        RadarWorker->SharedDB: upsert webhook event\nevent_type = attempt_exhausted\nentity_type = raw_policy_update
+      end
       RadarWorker->RadarWorker: stop processing this raw item
     else PDF parsed
       PDFDownloader-->RadarWorker: parsed attachment context
@@ -133,10 +139,13 @@ loop each selected raw item
 
   alt invalid output or processing failed
     RadarWorker->SharedDB: set policy_update_status = failed
+    opt policy_update_attempt_count reached 3
+      RadarWorker->SharedDB: upsert webhook event\nevent_type = attempt_exhausted\nentity_type = raw_policy_update
+    end
     RadarWorker->RadarWorker: stop processing this raw item
   else should_ingest = false
     RadarWorker->SharedDB: set policy_update_status = discarded
-    note right of RadarWorker: discard_reason is logged only\nnot persisted in DB
+    note right of RadarWorker: discard_reason is persisted\nfor prompt quality debugging
   else should_ingest = true
     RadarWorker->SharedDB: begin transaction
     RadarWorker->SharedDB: insert radar_policy_updates\ncopy source fields and original_text from raw item\npolicy_extract_status = pending\npolicy_review_status = pending\naction_calculate_status = pending
@@ -176,20 +185,63 @@ loop each selected policy update
 
   alt extract succeeded
     RadarWorker->SharedDB: set policy_extract_status = succeeded
+    RadarWorker->SharedDB: upsert webhook event\nevent_type = policy_impact_ready_for_review\nentity_type = policy_extract\nwith review page URL
   else extract failed
     RadarWorker->SharedDB: set policy_extract_status = failed
+    opt policy_extract_attempt_count reached 3
+      RadarWorker->SharedDB: upsert webhook event\nevent_type = attempt_exhausted\nentity_type = policy_extract
+    end
   end
 end
 
 RadarWorker->RadarWorker: Stage 3 completed
 ```
 
-## 5. Policy Impact Review Flow
+## 5. Stage 4: Send operational webhooks
 
-这张图描述 reviewer 如何查看、编辑、保存、approve 或 reject policy impact。
+这张图描述 Radar 如何发送内部运营 webhook。review-ready 和 attempt-exhausted 共用同一张 webhook outbox 表；每类事件按实体去重，并通过 `last_notified_at` 控制重复通知频率。
 
 ```text
-title 5. Policy Impact Review Flow
+title 5. Stage 4 - Send Operational Webhooks
+
+participant Scheduler
+participant RadarWorker
+participant SharedDB
+participant LarkTeam
+
+Scheduler->RadarWorker: run_periodic_cycle()
+RadarWorker->RadarWorker: Stage 4. Send operational webhooks
+note right of RadarWorker: send_operational_webhooks() sends Lark notifications\nfor review-ready and attempt-exhausted events\nStages create events when work becomes reviewable\nor when a failed attempt reaches its limit
+
+RadarWorker->SharedDB: select webhook events\nlast_notified_at is null\nor older than notification interval
+
+loop each selected webhook event
+  RadarWorker->SharedDB: verify event still needs notification
+
+  alt event no longer needs notification
+    RadarWorker->SharedDB: delete webhook event
+  else event still active
+    RadarWorker->LarkTeam: send webhook payload\nreview link or operational alert
+
+    alt webhook accepted
+      LarkTeam-->RadarWorker: accepted
+      RadarWorker->SharedDB: set last_notified_at = now()\nincrement notify_count
+    else webhook failed or timed out
+      LarkTeam-->RadarWorker: failure
+      RadarWorker->RadarWorker: log failure\nleave event eligible for a later cycle
+    end
+  end
+end
+
+RadarWorker->RadarWorker: Stage 4 completed
+```
+
+## 6. Policy Impact Review Flow
+
+这张图描述 reviewer 如何查看、编辑、保存、approve policy impact。Approve 只推进审核状态；后续 user actions 和邮件由周期任务处理。
+
+```text
+title 6. Policy Impact Review Flow
 
 actor Reviewer
 participant ReviewUI
@@ -198,7 +250,7 @@ participant SharedDB
 participant PolicyImpactBlackBox
 
 Reviewer->ReviewUI: open review page
-ReviewUI->ClassificationBackend: GET /review/policy-impacts/{policy_update_id}\nAuthorization: Bearer REVIEW_TOKEN
+ReviewUI->ClassificationBackend: GET /review/policy-impacts/{policy_update_id}
 ClassificationBackend->SharedDB: load policy update
 SharedDB-->ClassificationBackend: policy update
 ClassificationBackend->PolicyImpactBlackBox: get_policy_impact(policy_update_id)
@@ -207,7 +259,7 @@ ClassificationBackend-->ReviewUI: policy update + policy_impact
 
 opt reviewer edits policy impact
   Reviewer->ReviewUI: edit and save policy impact
-  ReviewUI->ClassificationBackend: PUT /review/policy-impacts/{policy_update_id}\nAuthorization: Bearer REVIEW_TOKEN
+  ReviewUI->ClassificationBackend: PUT /review/policy-impacts/{policy_update_id}
   ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
   ClassificationBackend->PolicyImpactBlackBox: validate_policy_impact(policy_update_id, policy_impact)
   PolicyImpactBlackBox-->ClassificationBackend: {success, message}
@@ -221,7 +273,7 @@ opt reviewer edits policy impact
 end
 
 alt reviewer approves
-  ReviewUI->ClassificationBackend: POST /review/policy-impacts/{policy_update_id}/approve\nAuthorization: Bearer REVIEW_TOKEN
+  ReviewUI->ClassificationBackend: POST /review/policy-impacts/{policy_update_id}/approve
   ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
   ClassificationBackend->PolicyImpactBlackBox: validate_policy_impact(policy_update_id)
   PolicyImpactBlackBox-->ClassificationBackend: {success, message}
@@ -229,42 +281,36 @@ alt reviewer approves
   alt validation success
     ClassificationBackend->SharedDB: set policy_review_status = approved
     ClassificationBackend-->ReviewUI: approved
-    ClassificationBackend->ClassificationBackend: try to create user actions and notifications immediately
-    note right of ClassificationBackend: run_after_approve() calls create_user_actions()\nthen send_action_notifications()
+    note right of ClassificationBackend: Approved policy impacts are picked up\nby a later periodic cycle
   else validation failed
     ClassificationBackend-->ReviewUI: 422 message
   end
-else reviewer rejects
-  ReviewUI->ClassificationBackend: POST /review/policy-impacts/{policy_update_id}/reject\nAuthorization: Bearer REVIEW_TOKEN
-  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
-  ClassificationBackend->SharedDB: set policy_review_status = rejected
-  ClassificationBackend-->ReviewUI: rejected
 end
 ```
 
-## 6. Stage 4: Create user actions
+## 7. Stage 5: Create user actions
 
 这张图描述 approved policy impact 如何为目标用户生成 user actions。按 target user 显式循环；只有所有目标用户都计算成功后，才会统一提交 actions 和 email deliveries。
 
 ```text
-title 6. Stage 4 - Create User Actions
+title 7. Stage 5 - Create User Actions
 
-participant Trigger
+participant Scheduler
 participant RadarWorker
 participant SharedDB
-participant UserSelector
+participant CMS
 participant PolicyImpactBlackBox
 
-Trigger->RadarWorker: create_user_actions(optional policy_update_id)
-note right of Trigger: Trigger can be periodic cycle\nor best-effort run_after_approve(policy_update_id)
+Scheduler->RadarWorker: run_periodic_cycle()
+RadarWorker->RadarWorker: Stage 5. Create user actions
 note right of RadarWorker: create_user_actions() runs only after approval\nAll target users must be calculated before committing
 
 RadarWorker->SharedDB: select policy updates with approved policy impacts\naction_calculate_status in pending/failed\naction_calculate_attempt_count < 3
 
 loop each selected policy update
   RadarWorker->SharedDB: increment action_calculate_attempt_count
-  RadarWorker->UserSelector: load target users
-  UserSelector-->RadarWorker: user_ids
+  RadarWorker->CMS: load target users
+  CMS-->RadarWorker: user_ids
 
   loop each target user
     RadarWorker->PolicyImpactBlackBox: calculate_user_actions(policy_update_id, user_id)
@@ -284,48 +330,43 @@ loop each selected policy update
   end
 
   alt any target user calculation failed
-    RadarWorker->SharedDB: update action_calculate_status = failed\nonly if it is not already succeeded
+    RadarWorker->SharedDB: set action_calculate_status = failed
+    opt action_calculate_attempt_count reached 3
+      RadarWorker->SharedDB: upsert webhook event\nevent_type = attempt_exhausted\nentity_type = action_calculate
+    end
     RadarWorker->RadarWorker: stop processing this policy update
   else all target users calculated successfully
     RadarWorker->SharedDB: begin transaction
-    RadarWorker->SharedDB: SELECT radar_policy_updates row FOR UPDATE\nand re-check action_calculate_status
-
-    alt another pipeline already set succeeded
-      RadarWorker->SharedDB: close transaction and release lock
-      RadarWorker->RadarWorker: skip writes and notifications
-    else still not succeeded
-      RadarWorker->SharedDB: insert radar_user_actions
-      RadarWorker->SharedDB: insert radar_user_action_products
-      RadarWorker->SharedDB: insert radar_user_action_items
-      RadarWorker->SharedDB: insert radar_email_deliveries for active recipients
-      RadarWorker->SharedDB: set action_calculate_status = succeeded
-      RadarWorker->SharedDB: commit
-    end
+    RadarWorker->SharedDB: insert radar_user_actions\nfor accumulated candidates
+    note right of SharedDB: affected_products and action_items\nare stored as JSONB on radar_user_actions
+    RadarWorker->SharedDB: insert radar_email_deliveries for active recipients
+    RadarWorker->SharedDB: set action_calculate_status = succeeded
+    RadarWorker->SharedDB: commit
   end
 end
 
-RadarWorker->RadarWorker: Stage 4 completed
+RadarWorker->RadarWorker: Stage 5 completed
 ```
 
-## 7. Stage 5: Send action notification emails
+## 8. Stage 6: Send action notification emails
 
 这张图描述 action notification email 的发送。邮件是外部副作用，因此同一封 delivery 必须单独控制并发。
 
 ```text
-title 7. Stage 5 - Send Action Notification Emails
+title 8. Stage 6 - Send Action Notification Emails
 
-participant Trigger
+participant Scheduler
 participant RadarWorker
 participant SharedDB
 participant EmailProvider
 
-Trigger->RadarWorker: send_action_notifications(optional policy_update_id)
-note right of Trigger: Periodic cycle sends globally\nrun_after_approve sends only for one policy_update_id
+Scheduler->RadarWorker: run_periodic_cycle()
+RadarWorker->RadarWorker: Stage 6. Send action notification emails
 note right of RadarWorker: send_action_notifications() sends one delivery at a time\nEach delivery is checked against the latest recipient status
 
 loop select and send one delivery at a time
   RadarWorker->SharedDB: begin transaction
-  RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3\noptional policy_update_id filter\nFOR UPDATE SKIP LOCKED
+  RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3\nFOR UPDATE SKIP LOCKED
 
   alt no delivery selected
     RadarWorker->SharedDB: commit
@@ -347,6 +388,9 @@ loop select and send one delivery at a time
       else provider failed or timed out
         EmailProvider-->RadarWorker: failure
         RadarWorker->SharedDB: set status = failed
+        opt attempt_count reached 3
+          RadarWorker->SharedDB: upsert webhook event\nevent_type = attempt_exhausted\nentity_type = email_delivery
+        end
         RadarWorker->SharedDB: commit
       end
     end
@@ -356,12 +400,12 @@ end
 note right of RadarWorker: If provider accepted but process crashes before marking sent,\na retry may send a duplicate. This is accepted in 1.0.
 ```
 
-## 8. User action usage and execution entry
+## 9. User action usage and execution entry
 
 这张图描述用户查看 actions、完成或取消完成 action item，以及点击 Go 进入 classification/sandbox 执行动作。
 
 ```text
-title 8. User Action Usage and Execution Entry
+title 9. User Action Usage and Execution Entry
 
 actor User
 participant Frontend
@@ -378,39 +422,39 @@ ClassificationBackend-->Frontend: user actions
 Frontend-->User: render actions
 
 User->Frontend: complete or uncomplete an action item
-Frontend->ClassificationBackend: PATCH /api/compliance-radar/action-items/{item_id}/completion\n{completed: true/false}
+Frontend->ClassificationBackend: PATCH /api/compliance-radar/actions/{action_id}/items/{action_type}/completion\n{completed: true/false}
 ClassificationBackend->SharedDB: begin transaction
-ClassificationBackend->SharedDB: verify item belongs to current user
-ClassificationBackend->SharedDB: update item status\ncompleted_at / completed_by
-ClassificationBackend->SharedDB: recompute parent card status
+ClassificationBackend->SharedDB: verify action belongs to current user
+ClassificationBackend->SharedDB: update action_items JSON status\nfor the selected action_type
+ClassificationBackend->SharedDB: recompute action status
 
 alt all items completed
-  ClassificationBackend->SharedDB: set card status = completed\nset completed_at / completed_by
+  ClassificationBackend->SharedDB: set action status = completed\nset completed_at / completed_by
 else any item still action_needed
-  ClassificationBackend->SharedDB: set card status = action_needed\nclear completed_at / completed_by
+  ClassificationBackend->SharedDB: set action status = action_needed\nclear completed_at / completed_by
 end
 
 ClassificationBackend->SharedDB: commit
-ClassificationBackend-->Frontend: updated action card
+ClassificationBackend-->Frontend: updated action
 note right of ClassificationBackend: Completion changes do not send emails
 
 User->Frontend: click Go on reclassify_product
-Frontend->Frontend: filter affected products\nwhere applicable_action_types contains reclassify_product
-Frontend->ClassificationProduct: navigate with action context\npolicy_update_id, action_item_id, product_uids
+Frontend->Frontend: filter affected products\nwhere suggested_actions contains reclassify_product
+Frontend->ClassificationProduct: navigate with action context\npolicy_update_id, action_type, product_uids
 note right of ClassificationProduct: Actual reclassification is owned by classification product\nRadar does not execute it
 
 User->Frontend: click Go on recalculate_tariff
-Frontend->Frontend: filter affected products\nwhere applicable_action_types contains recalculate_tariff
-Frontend->SandboxCalculator: navigate with action context\npolicy_update_id, action_item_id, product_uids
+Frontend->Frontend: filter affected products\nwhere suggested_actions contains recalculate_tariff
+Frontend->SandboxCalculator: navigate with action context\npolicy_update_id, action_type, product_uids
 note right of SandboxCalculator: Actual recalculation is owned by sandbox/calculator\nRadar does not execute it
 ```
 
-## 9. Notification Recipients and Unsubscribe
+## 10. Notification Recipients and Unsubscribe
 
 这张图描述用户管理通知邮箱、系统为新 actions 创建 email deliveries，以及收件人 unsubscribe。
 
 ```text
-title 9. Notification Recipients and Unsubscribe
+title 10. Notification Recipients and Unsubscribe
 
 actor User
 actor Recipient
@@ -447,7 +491,7 @@ ClassificationBackend-->Frontend: success
 
 RadarWorker->SharedDB: while creating user actions\nload active recipients
 RadarWorker->SharedDB: insert email deliveries in the same transaction\none per user_action_id + recipient_id
-RadarWorker->RadarWorker: after commit, call send_action_notifications()
+RadarWorker->RadarWorker: later Stage 6 sends pending deliveries
 RadarWorker->EmailProvider: send action notification with unsubscribe link
 EmailProvider-->Recipient: impact action email
 
@@ -466,8 +510,8 @@ end
 note right of RadarWorker: Existing sent deliveries remain historical records\nFuture deliveries only use active recipients\nUnsubscribed/deleted pending deliveries are not sent
 ```
 
-## 10. Reclassify
+## 11. Reclassify
 TODO
 
-## 11. Recalculate
+## 12. Recalculate
 TODO
