@@ -156,7 +156,7 @@ radar_webhook_events N -> operational entities
 
 ### 4.11 Durable 重试扫描条件
 
-周期任务的每个 stage 都是 state-driven：既处理本轮新产生的数据，也回补之前未完成或失败的数据。1.0 中 durable 层统一最多尝试 3 次，`attempt_count` 达到 3 后不再自动处理；是否人工修数据由数据库操作解决，不提供管理 API。
+周期任务的每个 stage 都是 state-driven：既处理本轮新产生的数据，也回补之前未完成或失败的数据。1.0 中 durable 层统一最多完成 3 次尝试，`attempt_count` 达到 3 后不再自动处理；是否人工修数据由数据库操作解决，不提供管理 API。
 
 | Stage | 扫描条件 | 计数位置 |
 | --- | --- | --- |
@@ -167,7 +167,7 @@ radar_webhook_events N -> operational entities
 | Send action notification emails | `radar_email_deliveries.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_email_deliveries.attempt_count` |
 | Dispatch operational webhooks | `radar_webhook_events.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_webhook_events.attempt_count` |
 
-计数建议在进入对应重型操作前递增并尽早持久化。这样正常失败会被 durable retry 控制住；如果进程在外部副作用完成后、状态写回前崩溃，后续仍按各 stage 的幂等或重复发送语义处理。
+`attempt_count` 表示已经完成的 durable attempts。计数不在重型操作前递增，而是在操作返回后，和状态写回放在同一个短事务中递增。如果进程在操作中途崩溃，本次 attempt 不计数，后续仍按各 stage 的幂等或重复发送语义处理。
 
 当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 写入或更新一条 `attempt_exhausted` webhook event。Webhook 发送由 Stage 6 按 `status/attempt_count` 状态驱动。
 
@@ -287,7 +287,7 @@ policy_extract_status = succeeded
 AND policy_review_status = pending
 ```
 
-1.0 不单独保存 `approved_by/approved_at`。Review API 不做 token 鉴权；如果未来需要严格审计，应新增 review audit 表，而不是复用 `updated_at`。
+1.0 不单独保存 `approved_by/approved_at`。Review API 使用 `classification-backend` 现有 admin/internal auth，不引入单独审核 token；如果未来需要严格审计，应新增 review audit 表，而不是复用 `updated_at`。
 
 ### 5.3 `radar_user_actions`
 
@@ -453,7 +453,7 @@ LIMIT 1
 - 无 `skipped` 状态。
 - 发送前重新检查 recipient 是否 active。
 - 如果 recipient 已 unsubscribed/deleted，未发送 delivery 可删除。
-- 发送前用短事务递增 `attempt_count` 并提交；Email Provider 调用通过 `EmailService` 在事务外发生；发送结果再用短事务写回。
+- Email Provider 调用通过 `EmailService` 在事务外发生；发送结果和 `attempt_count` 递增放在同一个短事务中写回。
 - SMTP accepted 但进程在写回 `sent` 前崩溃，可能导致后续重复发送；1.0 接受该 best-effort 语义。
 
 ### 5.6 `radar_webhook_events`
@@ -495,10 +495,9 @@ ON radar_webhook_events (status, attempt_count, created_at);
 发送规则：
 
 - 扫描 `status IN ('pending', 'failed') AND attempt_count < 3`。
-- 发送前用短事务递增 `attempt_count` 并提交。
 - Lark webhook 调用通过 `WebhookService` 在事务外发生，内部 RPC retry 最多 3 次。
-- 发送成功后用短事务设置 `status = sent`。
-- 发送失败后用短事务设置 `status = failed`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
+- 发送成功后用短事务设置 `status = sent` 并递增 `attempt_count`。
+- 发送失败后用短事务设置 `status = failed` 并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
 
 `entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 
@@ -546,12 +545,12 @@ update radar_user_actions completed_at/completed_by if needed
 
 ```text
 select one eligible delivery
-short transaction: check recipient active and increment attempt_count
+short transaction: check recipient active
 send email outside transaction via EmailService
-short transaction: update delivery status
+short transaction: update delivery status and increment attempt_count
 ```
 
-如果 recipient 已不是 active，短事务删除未发送 delivery。Email Provider 调用必须设置严格 timeout。
+如果 recipient 已不是 active，短事务删除未发送 delivery。发送前检查是 best-effort；检查后立即 unsubscribe 的极小竞态本期接受。Email Provider 调用必须设置严格 timeout。
 
 ### 6.5 Operational Webhook 发送
 
@@ -559,9 +558,8 @@ Lark webhook 发送不使用长事务：
 
 ```text
 select one eligible webhook event
-short transaction: increment attempt_count
 send Lark webhook outside transaction via WebhookService
-short transaction: update webhook event status
+short transaction: update webhook event status and increment attempt_count
 ```
 
 ## 7. 约束汇总
@@ -662,8 +660,7 @@ ALTER TABLE radar_webhook_events
 
 以下事项不改变当前数据库主结构，后续实现时按需处理：
 
-1. `updated_at` 由 DB trigger 自动维护。业务时间如审核时间、发送时间、完成时间必须使用独立字段，不能复用 `updated_at`。
-2. `raw_metadata/source_metadata` 暂不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
-3. recipient email 使用 `lower(email)` partial unique index，不引入 `citext` extension。
-4. `pdf_urls` 当前按 `jsonb` array 设计，元素先按 URL 字符串处理；如果实现时需要更多附件元信息，可扩展为 object array，不需要改字段类型。
-5. `product_uid`、`user_id`、`policy_update_id` 等关系字段不加硬外键，但 API 实现需要和 classification/sandbox 现有权限与数据一致性规则保持一致。
+1. `raw_metadata/source_metadata` 暂不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
+2. recipient email 使用 `lower(email)` partial unique index，不引入 `citext` extension。
+3. `pdf_urls` 当前按 `jsonb` array 设计，元素先按 URL 字符串处理；如果实现时需要更多附件元信息，可扩展为 object array，不需要改字段类型。
+4. `product_uid`、`user_id`、`policy_update_id` 等关系字段不加硬外键，但 API 实现需要和 classification/sandbox 现有权限与数据一致性规则保持一致。

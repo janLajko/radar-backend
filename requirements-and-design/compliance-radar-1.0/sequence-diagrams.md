@@ -110,8 +110,6 @@ note right of RadarWorker: create_policy_updates() decides what belongs in the R
 RadarWorker->SharedDB: select raw items\npolicy_update_status in pending/failed\npolicy_update_attempt_count < 3
 
 loop each selected raw item
-  RadarWorker->SharedDB: increment policy_update_attempt_count
-
   opt pdf_urls not empty
     RadarWorker->PDFDownloader: download and parse PDFs
     alt transient PDF failure
@@ -120,10 +118,12 @@ loop each selected raw item
 
     alt PDF still failed
       PDFDownloader-->RadarWorker: failure
-      RadarWorker->SharedDB: set policy_update_status = failed
-      opt policy_update_attempt_count reached 3
+      RadarWorker->SharedDB: begin short transaction
+      RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
+      opt new policy_update_attempt_count reached 3
         RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
       end
+      RadarWorker->SharedDB: commit
       RadarWorker->RadarWorker: stop processing this raw item
     else PDF parsed
       PDFDownloader-->RadarWorker: parsed attachment context
@@ -137,18 +137,22 @@ loop each selected raw item
   LLM-->RadarWorker: ingest decision, briefing, and policy update fields
 
   alt invalid output or processing failed
-    RadarWorker->SharedDB: set policy_update_status = failed
-    opt policy_update_attempt_count reached 3
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
+    opt new policy_update_attempt_count reached 3
       RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
     end
+    RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this raw item
   else should_ingest = false
-    RadarWorker->SharedDB: set policy_update_status = discarded
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set policy_update_status = discarded\nincrement policy_update_attempt_count
+    RadarWorker->SharedDB: commit
     note right of RadarWorker: discard_reason is persisted\nfor prompt quality debugging
   else should_ingest = true
     RadarWorker->SharedDB: begin transaction
     RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and original_text\npolicy_extract_status = pending\npolicy_review_status = pending\naction_calculate_status = pending
-    RadarWorker->SharedDB: set policy_update_status = ingested
+    RadarWorker->SharedDB: set policy_update_status = ingested\nincrement policy_update_attempt_count
     RadarWorker->SharedDB: commit
   end
 end
@@ -175,7 +179,6 @@ note right of RadarWorker: create_policy_impacts() evaluates and persists struct
 RadarWorker->SharedDB: select policy updates\npolicy_extract_status in pending/failed\npolicy_extract_attempt_count < 3
 
 loop each selected policy update
-  RadarWorker->SharedDB: increment policy_extract_attempt_count
   RadarWorker->PolicyImpactBlackBox: extract_policy_impact(policy_update_id)
   PolicyImpactBlackBox->SharedDB: read radar_policy_updates
   PolicyImpactBlackBox->PolicyImpactBlackBox: evaluate policy scope, affected HTS, and tariff implications
@@ -183,13 +186,17 @@ loop each selected policy update
   PolicyImpactBlackBox-->RadarWorker: true / false
 
   alt extract succeeded
-    RadarWorker->SharedDB: set policy_extract_status = succeeded
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set policy_extract_status = succeeded\nincrement policy_extract_attempt_count
     RadarWorker->SharedDB: upsert radar_webhook_events\npolicy_impact_ready_for_review for policy_update_id
+    RadarWorker->SharedDB: commit
   else extract failed
-    RadarWorker->SharedDB: set policy_extract_status = failed
-    opt policy_extract_attempt_count reached 3
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set policy_extract_status = failed\nincrement policy_extract_attempt_count
+    opt new policy_extract_attempt_count reached 3
       RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
     end
+    RadarWorker->SharedDB: commit
   end
 end
 
@@ -216,7 +223,6 @@ note right of RadarWorker: create_user_actions() runs only after approval\nAll t
 RadarWorker->SharedDB: select policy updates with approved policy impacts\naction_calculate_status in pending/failed\naction_calculate_attempt_count < 3
 
 loop each selected policy update
-  RadarWorker->SharedDB: increment action_calculate_attempt_count
   RadarWorker->CMS: load target users
   CMS-->RadarWorker: user_ids
 
@@ -238,17 +244,19 @@ loop each selected policy update
   end
 
   alt any target user calculation failed
-    RadarWorker->SharedDB: set action_calculate_status = failed
-    opt action_calculate_attempt_count reached 3
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set action_calculate_status = failed\nincrement action_calculate_attempt_count
+    opt new action_calculate_attempt_count reached 3
       RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
     end
+    RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this policy update
   else all target users calculated successfully
     RadarWorker->SharedDB: begin transaction
     RadarWorker->SharedDB: insert radar_user_actions\nfor accumulated candidates
     note right of SharedDB: affected_products and action_items\nare stored as JSONB on radar_user_actions
     RadarWorker->SharedDB: insert radar_email_deliveries for active recipients
-    RadarWorker->SharedDB: set action_calculate_status = succeeded
+    RadarWorker->SharedDB: set action_calculate_status = succeeded\nincrement action_calculate_attempt_count
     RadarWorker->SharedDB: commit
   end
 end
@@ -272,6 +280,7 @@ participant EmailProvider
 Scheduler->RadarWorker: run_periodic_cycle()
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
 note right of RadarWorker: send_action_notifications() sends one delivery at a time\nEach delivery is checked against the latest recipient status
+note right of RadarWorker: Recipient checks are best-effort\nA same-moment unsubscribe race is accepted in 1.0
 
 loop select and send one delivery at a time
   RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3
@@ -286,7 +295,6 @@ loop select and send one delivery at a time
       RadarWorker->SharedDB: delete unsent delivery
       RadarWorker->SharedDB: commit
     else recipient is active
-      RadarWorker->SharedDB: increment attempt_count
       RadarWorker->SharedDB: commit
 
       RadarWorker->EmailService: send email with strict timeout
@@ -299,14 +307,14 @@ loop select and send one delivery at a time
         EmailProvider-->EmailService: accepted
         EmailService-->RadarWorker: accepted
         RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = sent
+        RadarWorker->SharedDB: set status = sent\nincrement attempt_count
         RadarWorker->SharedDB: commit
       else provider failed or timed out
         EmailProvider-->EmailService: failure
         EmailService-->RadarWorker: failure
         RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = failed
-        opt attempt_count reached 3
+        RadarWorker->SharedDB: set status = failed\nincrement attempt_count
+        opt new attempt_count reached 3
           RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for delivery_id
         end
         RadarWorker->SharedDB: commit
@@ -341,10 +349,6 @@ loop select and send one webhook event at a time
   alt no event selected
     RadarWorker->RadarWorker: stop webhook stage
   else event selected
-    RadarWorker->SharedDB: begin short transaction
-    RadarWorker->SharedDB: increment attempt_count
-    RadarWorker->SharedDB: commit
-
     RadarWorker->WebhookService: send webhook event with strict timeout
     WebhookService->LarkTeam: send Lark webhook
     alt transient webhook failure
@@ -355,13 +359,13 @@ loop select and send one webhook event at a time
       LarkTeam-->WebhookService: accepted
       WebhookService-->RadarWorker: accepted
       RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = sent
+      RadarWorker->SharedDB: set status = sent\nincrement attempt_count
       RadarWorker->SharedDB: commit
     else webhook failed or timed out
       LarkTeam-->WebhookService: failure
       WebhookService-->RadarWorker: failure
       RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = failed
+      RadarWorker->SharedDB: set status = failed\nincrement attempt_count
       RadarWorker->SharedDB: commit
     end
   end
@@ -383,6 +387,7 @@ participant PolicyImpactBlackBox
 
 Reviewer->ReviewUI: open review page
 ReviewUI->ClassificationBackend: GET /review/policy-impacts/{policy_update_id}
+note right of ClassificationBackend: All review endpoints require existing admin/internal auth
 ClassificationBackend->SharedDB: load policy update
 SharedDB-->ClassificationBackend: policy update
 ClassificationBackend->PolicyImpactBlackBox: get_policy_impact(policy_update_id)

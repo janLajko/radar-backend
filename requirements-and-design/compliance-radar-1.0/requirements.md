@@ -373,6 +373,8 @@ calculate_user_actions(
 - 写入黑盒自己的 policy impact 表。
 - 返回 boolean 表示成功/失败。
 - 不更新 `radar_policy_updates` 状态。
+- 必须按 `policy_update_id` 幂等；重复调用必须安全复用或覆盖同一个 policy impact 结果，不得产生多份不确定版本。
+- 即使 Radar 还没来得及把 `policy_extract_status` 更新为 `succeeded`，`get_policy_impact(policy_update_id)` 也应能返回已经成功写入的 policy impact。
 
 `calculate_user_actions()` 返回候选 action 业务形状：
 
@@ -507,8 +509,16 @@ pending / sent / failed
 
 ### 10.5 Webhook Event
 
+event type：
+
 ```text
 policy_impact_ready_for_review / attempt_exhausted
+```
+
+status：
+
+```text
+pending / sent / failed
 ```
 
 Webhook event 是内部运营 outbox，不是用户通知。
@@ -555,7 +565,11 @@ webhook:
   and attempt_count < 3
 ```
 
-`attempt_count` 在进入重型操作前递增并持久化，避免崩溃后无限重跑。
+`attempt_count` 表示已经完成的 durable attempts。它不在重型操作前递增，而是在外部调用、LLM、黑盒计算、邮件发送或 webhook 发送返回后，和状态写回放在同一个短事务中递增。
+
+一旦某条记录进入重型操作，stage 实现应使用 `finally` 或等价的统一收口逻辑写回本次 durable attempt：递增对应 `attempt_count`、更新成功/失败状态，并在失败且达到上限时写入或复用 `attempt_exhausted` webhook event。
+
+如果进程在重型操作中途崩溃，本次 attempt 不计数，后续周期会重新尝试。黑盒函数必须通过幂等契约承受重试；email/webhook 这类外部副作用接受 best-effort 语义。
 
 当某个 durable attempt 达到上限后，worker 写入或复用一条 webhook event：
 
@@ -580,9 +594,8 @@ Webhook event 写入规则：
 Stage 6 `dispatch_operational_webhooks()` 按状态发送 Lark Team webhook：
 
 1. 选择一条 `status in ('pending', 'failed') and attempt_count < 3` 的 webhook event。
-2. 用短事务递增 `attempt_count` 并提交。
-3. 在事务外通过 `WebhookService` 调用 Lark webhook，内部 RPC retry 最多 3 次。
-4. 用短事务写 `status = sent` 或 `status = failed`。
+2. 在事务外通过 `WebhookService` 调用 Lark webhook，内部 RPC retry 最多 3 次。
+3. 用短事务写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
 
 attempt count 是纯后端控制信号，不暴露给普通用户 API，也不暴露给 review API/UI。
 
@@ -690,9 +703,9 @@ LIMIT 1
 
 1. 选择一条 eligible delivery。
 2. 如果 recipient 已不是 active，短事务删除未发送 delivery。
-3. 如果 recipient active，短事务递增 `attempt_count` 并提交。
-4. 事务外通过 `EmailService` 调用 Email Provider，内部 RPC retry 最多 3 次。
-5. 短事务写 `status = sent` 或 `status = failed`。
+3. 如果 recipient active，事务外通过 `EmailService` 调用 Email Provider，内部 RPC retry 最多 3 次。
+4. 短事务写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
+5. 发送前会检查 recipient active，但检查后立即 unsubscribe 的极小竞态本期接受。
 6. 如果失败后 `attempt_count` 已达到 3，写入或复用 `attempt_exhausted` webhook event。
 
 1.0 不引入 `sending/claimed_at/lease`。邮件是外部副作用，无法严格 exactly-once；如果 provider 已接受但进程在写回 `sent` 前崩溃，可能重复发送，本期接受 best-effort 语义。
@@ -723,6 +736,7 @@ GET    /api/compliance-radar/unsubscribe/{token}
 
 - email 只做格式校验。
 - 同一用户最多 5 个 active recipients。
+- active recipient 数量限制在并发新增场景下需要额外控制；1.0 的具体方案在 API 详细设计中决定。
 - 已存在 active：409 duplicate。
 - 已存在 unsubscribed：409 unsubscribed，不允许普通添加恢复。
 - 已存在 deleted：可以重新激活为 active，并刷新 token。
@@ -820,8 +834,8 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - 创建 policy update：`insert radar_policy_updates` 与 `update raw item status = ingested` 同事务。
 - 写 user actions：`insert radar_user_actions`、`insert radar_email_deliveries`、`update action_calculate_status = succeeded` 同事务。
 - action completion：验证用户归属、更新 `action_items` JSON、重算顶层 status 同事务。
-- email send：短事务递增 delivery attempt，事务外通过 `EmailService` 发送邮件，再用短事务写发送结果。
-- webhook dispatch：短事务递增 webhook event attempt，事务外发送 Lark，再用短事务写发送结果。
+- email send：事务外通过 `EmailService` 发送邮件，再用短事务写发送结果并递增 delivery attempt。
+- webhook dispatch：事务外发送 Lark，再用短事务写发送结果并递增 webhook event attempt。
 
 并发策略：
 
