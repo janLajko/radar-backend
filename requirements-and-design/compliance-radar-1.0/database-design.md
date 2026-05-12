@@ -14,7 +14,7 @@
 - 日期字段如 policy/action 生效日期使用 `date`。
 - 状态字段使用 `text` + check constraint，避免过早引入 Postgres enum 的 migration 成本。
 - 表字段顺序遵循：主键、身份/关联字段、业务域快照、核心内容、状态/计数字段、时间戳。
-- 数据库约束只覆盖核心外键、幂等唯一键、状态枚举、计数非负和 JSON 根类型；复杂业务规则由应用层负责。
+- 数据库约束只覆盖幂等唯一键、状态枚举、计数非负和 JSON 根类型；不施加 DB-level 外键，复杂业务规则由应用层负责。
 - 错误详情不入库；错误排查依赖应用日志。
 - LLM request/response 不入库。
 - `attempt_count` 是纯后端控制信号，不暴露给普通用户 API 或 review API。
@@ -68,10 +68,12 @@ radar_webhook_events N -> operational entities
 - `radar_email_deliveries(user_action_id, recipient_id)` 加唯一约束，保证同一 action 对同一个 recipient 最多一封邮件。
 - `radar_webhook_events(event_type, entity_type, entity_id, channel)` 加唯一约束，保证同一个运营事件按实体去重。
 
-外部表依赖：
+关系约束边界：
 
-- `users.id`：来自 `classification-backend` 现有用户表，当前代码中为 `bigint`。
-- 产品数据通过 `radar_user_actions.affected_products` 内的 `product_uid` 以快照形式保存。`classification-backend` 现有产品链路已经以 `product_uid` 作为产品身份；1.0 建议不加硬外键，避免产品表演进影响历史 action 展示与跳转。
+- 本文中的关系是业务关系，不表示数据库外键。
+- `user_id/completed_by` 指向 `classification-backend` 现有用户身份，当前按 `bigint` 存储，但不加数据库外键。
+- `raw_source_item_id/policy_update_id/user_action_id/recipient_id` 都由应用层按业务流程维护一致性，不加数据库外键。
+- 产品数据通过 `radar_user_actions.affected_products` 内的 `product_uid` 以快照形式保存。`classification-backend` 现有产品链路已经以 `product_uid` 作为产品身份；1.0 不加硬外键，避免产品表演进影响历史 action 展示与跳转。
 
 ## 4. 状态机
 
@@ -209,7 +211,7 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
-| `raw_source_item_id` | `bigint` | 是 |  | FK；unique | 对应的 raw source item |
+| `raw_source_item_id` | `bigint` | 是 |  | unique | 对应的 raw source item |
 | `source_key` | `text` | 是 |  | 建议索引 | source 稳定标识快照 |
 | `source_label` | `text` | 是 |  |  | source 展示名称快照 |
 | `source_url` | `text` | 是 |  |  | 原文 URL 快照 |
@@ -234,7 +236,6 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 
 ```sql
 PRIMARY KEY (id)
-FOREIGN KEY (raw_source_item_id) REFERENCES radar_raw_source_items(id)
 UNIQUE (raw_source_item_id)
 CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed'))
 CHECK (policy_review_status IN ('pending', 'approved'))
@@ -286,13 +287,13 @@ AND policy_review_status = pending
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
-| `user_id` | `bigint` | 是 |  | FK to users；unique 组合项；建议索引 | 用户 ID |
-| `policy_update_id` | `bigint` | 是 |  | FK；unique 组合项 | 对应 policy update |
+| `user_id` | `bigint` | 是 |  | unique 组合项；建议索引 | 用户 ID |
+| `policy_update_id` | `bigint` | 是 |  | unique 组合项 | 对应 policy update |
 | `affected_products` | `jsonb` | 是 | `'[]'::jsonb` | check array | 受影响产品快照，用于展示和构造 action 跳转 |
 | `action_items` | `jsonb` | 是 | `'[]'::jsonb` | check array | 建议 action items，最多包含 `reclassify_product` / `recalculate_tariff` |
 | `status` | `text` | 是 | `'action_needed'` | check enum；建议索引 | 用户 action 聚合状态 |
 | `completed_at` | `timestamptz` | 否 |  |  | 所有 items 完成时的时间；取消完成时清空 |
-| `completed_by` | `bigint` | 否 |  | FK to users 可选 | 完成该 card 的用户；1.0 通常是当前登录用户 |
+| `completed_by` | `bigint` | 否 |  |  | 完成该 card 的用户；1.0 通常是当前登录用户 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -300,9 +301,6 @@ AND policy_review_status = pending
 
 ```sql
 PRIMARY KEY (id)
-FOREIGN KEY (policy_update_id) REFERENCES radar_policy_updates(id)
-FOREIGN KEY (user_id) REFERENCES users(id)
-FOREIGN KEY (completed_by) REFERENCES users(id)
 UNIQUE (user_id, policy_update_id)
 CHECK (status IN ('action_needed', 'completed'))
 CHECK (jsonb_typeof(affected_products) = 'array')
@@ -354,7 +352,7 @@ ON radar_user_actions (user_id, status, created_at DESC);
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
-| `user_id` | `bigint` | 是 |  | FK to users；建议索引 | 所属用户 |
+| `user_id` | `bigint` | 是 |  | 建议索引 | 所属用户 |
 | `email` | `text` | 是 |  | 建议唯一索引 | 收件邮箱，建议存 lowercase normalized email |
 | `unsubscribe_token` | `text` | 是 |  | unique | 长期 unsubscribe token |
 | `status` | `text` | 是 | `'active'` | check enum；建议索引 | recipient 状态 |
@@ -365,7 +363,6 @@ ON radar_user_actions (user_id, status, created_at DESC);
 
 ```sql
 PRIMARY KEY (id)
-FOREIGN KEY (user_id) REFERENCES users(id)
 UNIQUE (unsubscribe_token)
 CHECK (status IN ('active', 'unsubscribed', 'deleted'))
 ```
@@ -374,7 +371,8 @@ CHECK (status IN ('active', 'unsubscribed', 'deleted'))
 
 ```sql
 CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
-ON radar_notification_recipients (user_id, lower(email));
+ON radar_notification_recipients (user_id, lower(email))
+WHERE status IN ('active', 'unsubscribed');
 
 CREATE INDEX idx_radar_notification_recipients_user_status
 ON radar_notification_recipients (user_id, status);
@@ -392,8 +390,8 @@ ON radar_notification_recipients (user_id, status);
 
 关于唯一索引：
 
-- 如果使用 `UNIQUE (user_id, lower(email))`，同一用户同一邮箱永远只有一行，最符合当前“deleted 可恢复、unsubscribed 不可普通恢复”的语义。
-- 如果未来需要保留同一邮箱多次添加历史，可再改为 partial unique，但 1.0 不需要。
+- `active/unsubscribed` recipient 参与唯一约束，避免同一用户同一邮箱重复订阅或绕过 unsubscribe。
+- `deleted` recipient 不参与唯一约束，因此删除后的邮箱可以重新添加。
 
 ### 5.5 `radar_email_deliveries`
 
@@ -404,8 +402,8 @@ ON radar_notification_recipients (user_id, status);
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
-| `user_action_id` | `bigint` | 是 |  | FK；unique 组合项 | 对应用户 action |
-| `recipient_id` | `bigint` | 是 |  | FK；unique 组合项 | 对应 recipient |
+| `user_action_id` | `bigint` | 是 |  | unique 组合项 | 对应用户 action |
+| `recipient_id` | `bigint` | 是 |  | unique 组合项 | 对应 recipient |
 | `recipient_email` | `text` | 是 |  |  | 发送目标邮箱快照 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | 邮件发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
@@ -418,8 +416,6 @@ ON radar_notification_recipients (user_id, status);
 
 ```sql
 PRIMARY KEY (id)
-FOREIGN KEY (user_action_id) REFERENCES radar_user_actions(id) ON DELETE CASCADE
-FOREIGN KEY (recipient_id) REFERENCES radar_notification_recipients(id)
 UNIQUE (user_action_id, recipient_id)
 CHECK (status IN ('pending', 'sent', 'failed'))
 CHECK (attempt_count >= 0)
@@ -635,19 +631,20 @@ ALTER TABLE radar_notification_recipients
   UNIQUE (unsubscribe_token);
 
 CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
-ON radar_notification_recipients (user_id, lower(email));
+ON radar_notification_recipients (user_id, lower(email))
+WHERE status IN ('active', 'unsubscribed');
 
 ALTER TABLE radar_webhook_events
   ADD CONSTRAINT uq_radar_webhook_events_event_entity_channel
   UNIQUE (event_type, entity_type, entity_id, channel);
 ```
 
-## 8. 实现阶段仍需确认的问题
+## 8. 后续实现注意事项
 
-以下问题不影响当前数据库主结构，但实现 migration 前需要结合具体代码风格再确认：
+以下事项不改变当前数据库主结构，后续实现时按需处理：
 
-1. `updated_at` 自动维护方式：DB trigger 或应用层统一更新。建议跟随 `classification-backend` 现有风格。
-2. `raw_metadata/source_metadata` 是否需要 GIN 索引。1.0 暂不建议，除非实现时确实需要按 metadata 查询。
-3. recipient email 是否使用 `citext`。本文以 `lower(email)` 唯一索引为默认方案，避免额外 extension 依赖。
+1. `updated_at` 由 DB trigger 自动维护。业务时间如审核时间、发送时间、完成时间必须使用独立字段，不能复用 `updated_at`。
+2. `raw_metadata/source_metadata` 暂不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
+3. recipient email 使用 `lower(email)` partial unique index，不引入 `citext` extension。
 4. `pdf_urls` 当前按 `jsonb` array 设计，元素先按 URL 字符串处理；如果实现时需要更多附件元信息，可扩展为 object array，不需要改字段类型。
-5. `product_uid` 不加硬外键，但 API 实现需要和 classification/sandbox 现有产品查询权限保持一致。
+5. `product_uid`、`user_id`、`policy_update_id` 等关系字段不加硬外键，但 API 实现需要和 classification/sandbox 现有权限与数据一致性规则保持一致。

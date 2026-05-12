@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radar-backend"
+version = "0.1.0"
+description = "Compliance Radar worker backend"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "psycopg[binary,pool]>=3.2,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
+[project.scripts]
+radar-worker = "radar_backend.worker.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
