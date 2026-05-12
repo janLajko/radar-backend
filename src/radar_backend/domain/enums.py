@@ -61,7 +61,12 @@ class WebhookEntityType(StrEnum):
     EMAIL_DELIVERY = "email_delivery"
 
 
+class WebhookEventStatus(StrEnum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
 class ActionType(StrEnum):
     RECLASSIFY_PRODUCT = "reclassify_product"
     RECALCULATE_TARIFF = "recalculate_tariff"
-

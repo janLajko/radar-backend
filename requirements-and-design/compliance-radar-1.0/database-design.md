@@ -146,7 +146,15 @@ radar_webhook_events N -> operational entities
 | `policy_impact_ready_for_review` | policy impact 已准备好，需要人工审核 |
 | `attempt_exhausted` | 某条记录 durable attempt_count 达到上限，需要人工排查 |
 
-### 4.10 Durable 重试扫描条件
+### 4.10 `radar_webhook_events.status`
+
+| 枚举值 | 含义 | 是否会继续自动处理 |
+| --- | --- | --- |
+| `pending` | 待发送 | 是，若 `attempt_count < 3` |
+| `sent` | 已发送成功 | 否 |
+| `failed` | 发送失败 | 是，若 `attempt_count < 3` |
+
+### 4.11 Durable 重试扫描条件
 
 周期任务的每个 stage 都是 state-driven：既处理本轮新产生的数据，也回补之前未完成或失败的数据。1.0 中 durable 层统一最多尝试 3 次，`attempt_count` 达到 3 后不再自动处理；是否人工修数据由数据库操作解决，不提供管理 API。
 
@@ -157,10 +165,11 @@ radar_webhook_events N -> operational entities
 | Create policy impacts | `radar_policy_updates.policy_extract_status IN ('pending', 'failed') AND policy_extract_attempt_count < 3` | `radar_policy_updates.policy_extract_attempt_count` |
 | Create user actions | `radar_policy_updates.policy_review_status = 'approved' AND action_calculate_status IN ('pending', 'failed') AND action_calculate_attempt_count < 3` | `radar_policy_updates.action_calculate_attempt_count` |
 | Send action notification emails | `radar_email_deliveries.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_email_deliveries.attempt_count` |
+| Dispatch operational webhooks | `radar_webhook_events.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_webhook_events.attempt_count` |
 
 计数建议在进入对应重型操作前递增并尽早持久化。这样正常失败会被 durable retry 控制住；如果进程在外部副作用完成后、状态写回前崩溃，后续仍按各 stage 的幂等或重复发送语义处理。
 
-当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 写入或更新一条 `attempt_exhausted` webhook event。Webhook 是否实际发送由 `radar_webhook_events.last_notified_at` 和通知间隔控制。
+当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 写入或更新一条 `attempt_exhausted` webhook event。Webhook 发送由 Stage 6 按 `status/attempt_count` 状态驱动。
 
 ## 5. 表结构详情
 
@@ -395,7 +404,7 @@ ON radar_notification_recipients (user_id, status);
 
 ### 5.5 `radar_email_deliveries`
 
-保存每封 Impact Action 邮件的发送记录。发送前使用 `FOR UPDATE SKIP LOCKED` 做同一 delivery 的竞态控制。
+保存每封 Impact Action 邮件的发送记录。发送由单实例 worker 串行处理，不使用数据库抢锁。
 
 创建 delivery 时只针对当时 `active` 的 recipients。`unsubscribed/deleted` recipients 不进入 delivery 表；如果 delivery 创建后 recipient 状态变化，发送前再次检查并删除未发送 delivery。
 
@@ -407,8 +416,6 @@ ON radar_notification_recipients (user_id, status);
 | `recipient_email` | `text` | 是 |  |  | 发送目标邮箱快照 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | 邮件发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
-| `last_attempt_at` | `timestamptz` | 否 |  |  | 最近一次发送尝试时间 |
-| `sent_at` | `timestamptz` | 否 |  |  | 成功发送时间 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -438,7 +445,6 @@ WHERE status IN ('pending', 'failed')
   AND attempt_count < 3
 ORDER BY created_at
 LIMIT 1
-FOR UPDATE SKIP LOCKED;
 ```
 
 说明：
@@ -447,6 +453,7 @@ FOR UPDATE SKIP LOCKED;
 - 无 `skipped` 状态。
 - 发送前重新检查 recipient 是否 active。
 - 如果 recipient 已 unsubscribed/deleted，未发送 delivery 可删除。
+- 发送前用短事务递增 `attempt_count` 并提交；Email Provider 调用通过 `EmailService` 在事务外发生；发送结果再用短事务写回。
 - SMTP accepted 但进程在写回 `sent` 前崩溃，可能导致后续重复发送；1.0 接受该 best-effort 语义。
 
 ### 5.6 `radar_webhook_events`
@@ -461,8 +468,8 @@ FOR UPDATE SKIP LOCKED;
 | `entity_id` | `bigint` | 是 |  | unique 组合项 | 关联实体 ID |
 | `channel` | `text` | 是 | `'lark_team'` | unique 组合项 | 通知渠道 |
 | `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照；内部结构由发送器契约定义 |
-| `last_notified_at` | `timestamptz` | 否 |  | 建议索引 | 最近一次成功通知时间 |
-| `notify_count` | `integer` | 是 | `0` | check `>= 0` | 成功通知次数 |
+| `status` | `text` | 是 | `'pending'` | check enum；建议索引 | webhook 发送状态 |
+| `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -474,24 +481,24 @@ UNIQUE (event_type, entity_type, entity_id, channel)
 CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted'))
 CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery'))
 CHECK (jsonb_typeof(payload) = 'object')
-CHECK (notify_count >= 0)
+CHECK (status IN ('pending', 'sent', 'failed'))
+CHECK (attempt_count >= 0)
 ```
 
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_webhook_events_notify_work
-ON radar_webhook_events (last_notified_at, created_at);
+CREATE INDEX idx_radar_webhook_events_dispatch_work
+ON radar_webhook_events (status, attempt_count, created_at);
 ```
 
 发送规则：
 
-- 如果 `last_notified_at IS NULL`，允许发送。
-- 如果 `last_notified_at` 距离当前时间超过配置的通知间隔，允许再次发送。
-- 发送前重新检查业务实体仍需要通知：review event 只在 `policy_extract_status = succeeded` 且 `policy_review_status = pending` 时发送；attempt exhausted event 只在对应实体仍处于未解决状态时发送。
-- 如果业务实体已经不再需要通知，删除对应 webhook event。
-- 发送成功后更新 `last_notified_at` 并递增 `notify_count`。
-- 发送失败只写日志，不更新 `last_notified_at`；后续周期任务自然重试。
+- 扫描 `status IN ('pending', 'failed') AND attempt_count < 3`。
+- 发送前用短事务递增 `attempt_count` 并提交。
+- Lark webhook 调用通过 `WebhookService` 在事务外发生，内部 RPC retry 最多 3 次。
+- 发送成功后用短事务设置 `status = sent`。
+- 发送失败后用短事务设置 `status = failed`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
 
 `entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 
@@ -535,17 +542,27 @@ update radar_user_actions completed_at/completed_by if needed
 
 ### 6.4 Email Delivery 发送
 
-同一事务内锁住单条 delivery：
+邮件发送不使用长事务：
 
 ```text
-SELECT ... FOR UPDATE SKIP LOCKED
-check recipient active
-send email with strict timeout
-update delivery status
-commit
+select one eligible delivery
+short transaction: check recipient active and increment attempt_count
+send email outside transaction via EmailService
+short transaction: update delivery status
 ```
 
-该事务包含外部邮件发送调用，因此必须一次只处理一封邮件并设置严格 timeout。
+如果 recipient 已不是 active，短事务删除未发送 delivery。Email Provider 调用必须设置严格 timeout。
+
+### 6.5 Operational Webhook 发送
+
+Lark webhook 发送不使用长事务：
+
+```text
+select one eligible webhook event
+short transaction: increment attempt_count
+send Lark webhook outside transaction via WebhookService
+short transaction: update webhook event status
+```
 
 ## 7. 约束汇总
 
@@ -601,10 +618,12 @@ ALTER TABLE radar_webhook_events
   CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   ADD CONSTRAINT chk_radar_webhook_events_entity_type
   CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+  ADD CONSTRAINT chk_radar_webhook_events_status
+  CHECK (status IN ('pending', 'sent', 'failed')),
   ADD CONSTRAINT chk_radar_webhook_events_payload_object
   CHECK (jsonb_typeof(payload) = 'object'),
-  ADD CONSTRAINT chk_radar_webhook_events_notify_count
-  CHECK (notify_count >= 0);
+  ADD CONSTRAINT chk_radar_webhook_events_attempt_count
+  CHECK (attempt_count >= 0);
 ```
 
 ### 7.2 Unique Constraints / Indexes

@@ -9,6 +9,7 @@ from radar_backend.domain.enums import (
     RecipientStatus,
     UserActionStatus,
     WebhookEntityType,
+    WebhookEventStatus,
     WebhookEventType,
 )
 
@@ -23,6 +24,6 @@ __all__ = [
     "RecipientStatus",
     "UserActionStatus",
     "WebhookEntityType",
+    "WebhookEventStatus",
     "WebhookEventType",
 ]
-

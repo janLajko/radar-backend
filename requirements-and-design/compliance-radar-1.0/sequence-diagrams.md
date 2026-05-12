@@ -27,7 +27,7 @@ note right of RadarWorker: Each raw item is evaluated for the Radar feed\nReleva
 RadarWorker->RadarWorker: Stage 3. Create policy impacts for review
 note right of RadarWorker: Each policy update is evaluated into structured impact data\nso a reviewer can validate what the policy affects
 
-RadarWorker-->Reviewer: policy impact ready for review\nvia OperationalWebhookService
+RadarWorker-->Reviewer: policy impact ready for review\nvia webhook outbox + Stage 6
 note right of Reviewer: Human approval is required\nbefore user actions can be created\nApproval only changes review status
 
 RadarWorker->RadarWorker: Stage 4. Create user actions
@@ -35,6 +35,9 @@ note right of RadarWorker: Only approved policy impacts move forward\nActions ar
 
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
 note right of RadarWorker: New user actions create email deliveries\nEmail sending happens after actions are committed
+
+RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
+note right of RadarWorker: Review-ready and attempt-exhausted events are sent to Lark\nWebhook sending is driven by status and attempt_count
 
 note right of RadarWorker: Cycle summary:\n- Every cycle is state-driven\n- Each stage picks up newly eligible records\nand unfinished or failed records within retry limits
 
@@ -97,7 +100,6 @@ title 3. Stage 2 - Create Recent Policy Updates
 participant Scheduler
 participant RadarWorker
 participant SharedDB
-participant OperationalWebhookService
 participant PDFDownloader
 participant LLM
 
@@ -120,7 +122,7 @@ loop each selected raw item
       PDFDownloader-->RadarWorker: failure
       RadarWorker->SharedDB: set policy_update_status = failed
       opt policy_update_attempt_count reached 3
-        RadarWorker->OperationalWebhookService: notify_attempt_exhausted(\nraw_policy_update, raw_source_item_id)
+        RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
       end
       RadarWorker->RadarWorker: stop processing this raw item
     else PDF parsed
@@ -137,7 +139,7 @@ loop each selected raw item
   alt invalid output or processing failed
     RadarWorker->SharedDB: set policy_update_status = failed
     opt policy_update_attempt_count reached 3
-      RadarWorker->OperationalWebhookService: notify_attempt_exhausted(\nraw_policy_update, raw_source_item_id)
+      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
     end
     RadarWorker->RadarWorker: stop processing this raw item
   else should_ingest = false
@@ -164,7 +166,6 @@ title 4. Stage 3 - Create Policy Impacts for Review
 participant Scheduler
 participant RadarWorker
 participant SharedDB
-participant OperationalWebhookService
 participant PolicyImpactBlackBox
 
 Scheduler->RadarWorker: run_periodic_cycle()
@@ -183,11 +184,11 @@ loop each selected policy update
 
   alt extract succeeded
     RadarWorker->SharedDB: set policy_extract_status = succeeded
-    RadarWorker->OperationalWebhookService: notify_policy_impact_ready_for_review(\npolicy_update_id, review_url)
+    RadarWorker->SharedDB: upsert radar_webhook_events\npolicy_impact_ready_for_review for policy_update_id
   else extract failed
     RadarWorker->SharedDB: set policy_extract_status = failed
     opt policy_extract_attempt_count reached 3
-      RadarWorker->OperationalWebhookService: notify_attempt_exhausted(\npolicy_extract, policy_update_id)
+      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
     end
   end
 end
@@ -205,7 +206,6 @@ title 5. Stage 4 - Create User Actions
 participant Scheduler
 participant RadarWorker
 participant SharedDB
-participant OperationalWebhookService
 participant CMS
 participant PolicyImpactBlackBox
 
@@ -240,7 +240,7 @@ loop each selected policy update
   alt any target user calculation failed
     RadarWorker->SharedDB: set action_calculate_status = failed
     opt action_calculate_attempt_count reached 3
-      RadarWorker->OperationalWebhookService: notify_attempt_exhausted(\naction_calculate, policy_update_id)
+      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
     end
     RadarWorker->RadarWorker: stop processing this policy update
   else all target users calculated successfully
@@ -258,7 +258,7 @@ RadarWorker->RadarWorker: Stage 4 completed
 
 ## 6. Stage 5: Send action notification emails
 
-这张图描述 action notification email 的发送。邮件是外部副作用，因此同一封 delivery 必须单独控制并发。
+这张图描述 action notification email 的发送。邮件是外部副作用，Email Provider 调用不在数据库事务内。
 
 ```text
 title 6. Stage 5 - Send Action Notification Emails
@@ -266,7 +266,7 @@ title 6. Stage 5 - Send Action Notification Emails
 participant Scheduler
 participant RadarWorker
 participant SharedDB
-participant OperationalWebhookService
+participant EmailService
 participant EmailProvider
 
 Scheduler->RadarWorker: run_periodic_cycle()
@@ -274,31 +274,40 @@ RadarWorker->RadarWorker: Stage 5. Send action notification emails
 note right of RadarWorker: send_action_notifications() sends one delivery at a time\nEach delivery is checked against the latest recipient status
 
 loop select and send one delivery at a time
-  RadarWorker->SharedDB: begin transaction
-  RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3\nFOR UPDATE SKIP LOCKED
+  RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3
 
   alt no delivery selected
-    RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop email stage
   else delivery selected
+    RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: load recipient
 
     alt recipient is not active
       RadarWorker->SharedDB: delete unsent delivery
       RadarWorker->SharedDB: commit
     else recipient is active
-      RadarWorker->SharedDB: increment attempt_count\nset last_attempt_at
-      RadarWorker->EmailProvider: send email with strict timeout
+      RadarWorker->SharedDB: increment attempt_count
+      RadarWorker->SharedDB: commit
+
+      RadarWorker->EmailService: send email with strict timeout
+      EmailService->EmailProvider: send email
+      alt transient provider failure
+        EmailService->EmailService: retry with backoff\nup to 3 RPC attempts
+      end
 
       alt provider accepted
-        EmailProvider-->RadarWorker: accepted
-        RadarWorker->SharedDB: set status = sent\nset sent_at
+        EmailProvider-->EmailService: accepted
+        EmailService-->RadarWorker: accepted
+        RadarWorker->SharedDB: begin short transaction
+        RadarWorker->SharedDB: set status = sent
         RadarWorker->SharedDB: commit
       else provider failed or timed out
-        EmailProvider-->RadarWorker: failure
+        EmailProvider-->EmailService: failure
+        EmailService-->RadarWorker: failure
+        RadarWorker->SharedDB: begin short transaction
         RadarWorker->SharedDB: set status = failed
         opt attempt_count reached 3
-          RadarWorker->OperationalWebhookService: notify_attempt_exhausted(\nemail_delivery, delivery_id)
+          RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for delivery_id
         end
         RadarWorker->SharedDB: commit
       end
@@ -309,12 +318,62 @@ end
 note right of RadarWorker: If provider accepted but process crashes before marking sent,\na retry may send a duplicate. This is accepted in 1.0.
 ```
 
-## 7. Policy Impact Review Flow
+## 7. Stage 6: Dispatch operational webhooks
+
+这张图描述 Lark operational webhook 的发送。Webhook 发送由 outbox 状态驱动，Lark 调用不在数据库事务内。
+
+```text
+title 7. Stage 6 - Dispatch Operational Webhooks
+
+participant Scheduler
+participant RadarWorker
+participant SharedDB
+participant WebhookService
+participant LarkTeam
+
+Scheduler->RadarWorker: run_periodic_cycle()
+RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
+note right of RadarWorker: dispatch_operational_webhooks() sends one event at a time\nEach event uses status and attempt_count for durable retry
+
+loop select and send one webhook event at a time
+  RadarWorker->SharedDB: select one webhook event\nstatus in pending/failed\nattempt_count < 3
+
+  alt no event selected
+    RadarWorker->RadarWorker: stop webhook stage
+  else event selected
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: increment attempt_count
+    RadarWorker->SharedDB: commit
+
+    RadarWorker->WebhookService: send webhook event with strict timeout
+    WebhookService->LarkTeam: send Lark webhook
+    alt transient webhook failure
+      WebhookService->WebhookService: retry with backoff\nup to 3 RPC attempts
+    end
+
+    alt webhook accepted
+      LarkTeam-->WebhookService: accepted
+      WebhookService-->RadarWorker: accepted
+      RadarWorker->SharedDB: begin short transaction
+      RadarWorker->SharedDB: set status = sent
+      RadarWorker->SharedDB: commit
+    else webhook failed or timed out
+      LarkTeam-->WebhookService: failure
+      WebhookService-->RadarWorker: failure
+      RadarWorker->SharedDB: begin short transaction
+      RadarWorker->SharedDB: set status = failed
+      RadarWorker->SharedDB: commit
+    end
+  end
+end
+```
+
+## 8. Policy Impact Review Flow
 
 这张图描述 reviewer 如何查看、编辑、保存、approve policy impact。Approve 只推进审核状态；后续 user actions 和邮件由周期任务处理。
 
 ```text
-title 7. Policy Impact Review Flow
+title 8. Policy Impact Review Flow
 
 actor Reviewer
 participant ReviewUI
@@ -357,55 +416,6 @@ alt reviewer approves
     note right of ClassificationBackend: Approved policy impacts are picked up\nby a later periodic cycle
   else validation failed
     ClassificationBackend-->ReviewUI: 422 message
-  end
-end
-```
-
-## 8. Operational webhook service
-
-这张图描述 `OperationalWebhookService` 如何针对具体场景发送内部运营 webhook。它不是周期任务 stage，而是被具体业务路径调用的普通 service。review-ready 和 attempt-exhausted 共用同一张 webhook outbox 表；每类事件按实体去重，并通过 `last_notified_at` 控制重复通知频率。
-
-```text
-title 8. Operational Webhook Service
-
-participant Caller
-participant OperationalWebhookService
-participant SharedDB
-participant LarkTeam
-
-Caller->OperationalWebhookService: notify_policy_impact_ready_for_review(\npolicy_update_id, review_url)
-OperationalWebhookService->SharedDB: upsert or reuse webhook event\nevent_type = policy_impact_ready_for_review\nentity_type = policy_extract
-OperationalWebhookService->SharedDB: check last_notified_at\nagainst notification interval
-
-alt notification should be skipped
-  OperationalWebhookService-->Caller: skipped
-else notification should be sent
-  OperationalWebhookService->LarkTeam: send review-ready webhook\nwith review_url
-  alt webhook accepted
-    LarkTeam-->OperationalWebhookService: accepted
-    OperationalWebhookService->SharedDB: set last_notified_at = now()\nincrement notify_count
-    OperationalWebhookService-->Caller: sent
-  else webhook failed or timed out
-    LarkTeam-->OperationalWebhookService: failure
-    OperationalWebhookService-->Caller: failed
-  end
-end
-
-Caller->OperationalWebhookService: notify_attempt_exhausted(\nentity_type, entity_id)
-OperationalWebhookService->SharedDB: upsert or reuse webhook event\nevent_type = attempt_exhausted\nentity_type + entity_id
-OperationalWebhookService->SharedDB: check last_notified_at\nagainst notification interval
-
-alt notification should be skipped
-  OperationalWebhookService-->Caller: skipped
-else notification should be sent
-  OperationalWebhookService->LarkTeam: send operational alert
-  alt webhook accepted
-    LarkTeam-->OperationalWebhookService: accepted
-    OperationalWebhookService->SharedDB: set last_notified_at = now()\nincrement notify_count
-    OperationalWebhookService-->Caller: sent
-  else webhook failed or timed out
-    LarkTeam-->OperationalWebhookService: failure
-    OperationalWebhookService-->Caller: failed
   end
 end
 ```
@@ -472,6 +482,7 @@ participant Frontend
 participant ClassificationBackend
 participant SharedDB
 participant RadarWorker
+participant EmailService
 participant EmailProvider
 
 User->Frontend: add notification email
@@ -502,7 +513,8 @@ ClassificationBackend-->Frontend: success
 RadarWorker->SharedDB: while creating user actions\nload active recipients
 RadarWorker->SharedDB: insert email deliveries in the same transaction\none per user_action_id + recipient_id
 RadarWorker->RadarWorker: later Stage 5 sends pending deliveries
-RadarWorker->EmailProvider: send action notification with unsubscribe link
+RadarWorker->EmailService: send action notification with unsubscribe link
+EmailService->EmailProvider: send email
 EmailProvider-->Recipient: impact action email
 
 Recipient->Frontend: open unsubscribe link

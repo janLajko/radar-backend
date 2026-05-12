@@ -65,4 +65,5 @@ def test_default_cycle_stage_order() -> None:
         "create_policy_impacts",
         "create_user_actions",
         "send_action_notifications",
+        "dispatch_operational_webhooks",
     ]

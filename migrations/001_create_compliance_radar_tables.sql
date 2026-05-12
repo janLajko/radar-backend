@@ -142,8 +142,6 @@ CREATE TABLE radar_email_deliveries (
   recipient_email text NOT NULL,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
-  last_attempt_at timestamptz,
-  sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
@@ -167,8 +165,8 @@ CREATE TABLE radar_webhook_events (
   entity_id bigint NOT NULL,
   channel text NOT NULL DEFAULT 'lark_team',
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-  last_notified_at timestamptz,
-  notify_count integer NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'pending',
+  attempt_count integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
@@ -178,10 +176,12 @@ CREATE TABLE radar_webhook_events (
     CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   CONSTRAINT chk_radar_webhook_events_entity_type
     CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+  CONSTRAINT chk_radar_webhook_events_status
+    CHECK (status IN ('pending', 'sent', 'failed')),
   CONSTRAINT chk_radar_webhook_events_payload_object
     CHECK (jsonb_typeof(payload) = 'object'),
-  CONSTRAINT chk_radar_webhook_events_notify_count
-    CHECK (notify_count >= 0)
+  CONSTRAINT chk_radar_webhook_events_attempt_count
+    CHECK (attempt_count >= 0)
 );
 
 CREATE TRIGGER trg_radar_webhook_events_updated_at
@@ -218,7 +218,7 @@ CREATE INDEX idx_radar_email_deliveries_send_work
 ON radar_email_deliveries (created_at)
 WHERE status IN ('pending', 'failed') AND attempt_count < 3;
 
-CREATE INDEX idx_radar_webhook_events_notify_work
-ON radar_webhook_events (last_notified_at, created_at);
+CREATE INDEX idx_radar_webhook_events_dispatch_work
+ON radar_webhook_events (status, attempt_count, created_at);
 
 COMMIT;

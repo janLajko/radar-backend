@@ -178,7 +178,7 @@ active / unsubscribed / deleted
 - 提供 Policy Impact Review API。
 - 使用现有登录/auth 体系保护普通用户 API。
 
-Review API 1.0 不引入单独审核 token。如果未来需要严格内部鉴权或审计，再单独设计，不在本期复杂化。
+Review API 使用 `classification-backend` 现有 admin/internal auth，不引入单独审核 token。1.0 不在 Radar 表中保存 `approved_by/approved_at`；如果未来需要严格审核审计，应新增 audit log，而不是污染 `radar_policy_updates`。
 
 ## 5. 周期任务编排
 
@@ -191,6 +191,7 @@ run_periodic_cycle():
   3. create_policy_impacts()
   4. create_user_actions()
   5. send_action_notifications()
+  6. dispatch_operational_webhooks()
 ```
 
 编排约束：
@@ -204,6 +205,8 @@ run_periodic_cycle():
 - 定时任务内部不再启动异步线程。
 - 唯一允许并发的是 Stage 1 内部的 source adapter 并发抓取。
 - 所有 source 抓取完成并完成 raw item 写入/跳过后，才进入 Stage 2。
+- 任何外部调用都不在数据库事务内，包括 source fetch、PDF 下载、LLM、黑盒函数、CMS、Email Provider 和 Lark webhook。
+- 数据库事务只包本地状态推进和原子写入。
 
 每个周期都是 state-driven：
 
@@ -524,6 +527,7 @@ radar_raw_source_items.policy_update_attempt_count
 radar_policy_updates.policy_extract_attempt_count
 radar_policy_updates.action_calculate_attempt_count
 radar_email_deliveries.attempt_count
+radar_webhook_events.attempt_count
 ```
 
 扫描条件：
@@ -545,28 +549,40 @@ action calculate:
 email:
   status in ('pending', 'failed')
   and attempt_count < 3
+
+webhook:
+  status in ('pending', 'failed')
+  and attempt_count < 3
 ```
 
 `attempt_count` 在进入重型操作前递增并持久化，避免崩溃后无限重跑。
 
-当某个 durable attempt 达到上限后，worker 调用 `OperationalWebhookService.notify_attempt_exhausted(...)`：
+当某个 durable attempt 达到上限后，worker 写入或复用一条 webhook event：
 
 ```text
 event_type = attempt_exhausted
 ```
 
-Policy Impact 抽取成功后，worker 调用 `OperationalWebhookService.notify_policy_impact_ready_for_review(...)`：
+Policy Impact 抽取成功后，worker 写入或复用一条 webhook event：
 
 ```text
 event_type = policy_impact_ready_for_review
 ```
 
-`OperationalWebhookService` 按具体场景发送 Lark Team webhook：
+Webhook event 写入规则：
 
 - review-ready 事件带前端 review 链接。
 - attempt-exhausted 事件带运营排查信息。
-- `last_notified_at` 控制重复通知频率。
-- service 函数接收明确参数，不参与周期任务 stage 编排。
+- event 默认 `status = pending`。
+- 业务 stage 直接通过 repository 写入 `radar_webhook_events`。
+- 唯一键保证同一事件按实体幂等。
+
+Stage 6 `dispatch_operational_webhooks()` 按状态发送 Lark Team webhook：
+
+1. 选择一条 `status in ('pending', 'failed') and attempt_count < 3` 的 webhook event。
+2. 用短事务递增 `attempt_count` 并提交。
+3. 在事务外通过 `WebhookService` 调用 Lark webhook，内部 RPC retry 最多 3 次。
+4. 用短事务写 `status = sent` 或 `status = failed`。
 
 attempt count 是纯后端控制信号，不暴露给普通用户 API，也不暴露给 review API/UI。
 
@@ -659,7 +675,7 @@ Go 跳转：
 - 已存在但未发送的 delivery 在发送前重新检查 recipient 状态；如果不 active，则删除未发送 delivery。
 - 已 sent delivery 保留为历史记录。
 
-邮件发送使用单条 delivery 粒度：
+邮件发送使用单条 delivery 粒度，并且外部邮件调用不在数据库事务内：
 
 ```sql
 SELECT ...
@@ -668,8 +684,16 @@ WHERE status IN ('pending', 'failed')
   AND attempt_count < 3
 ORDER BY created_at
 LIMIT 1
-FOR UPDATE SKIP LOCKED;
 ```
+
+发送流程：
+
+1. 选择一条 eligible delivery。
+2. 如果 recipient 已不是 active，短事务删除未发送 delivery。
+3. 如果 recipient active，短事务递增 `attempt_count` 并提交。
+4. 事务外通过 `EmailService` 调用 Email Provider，内部 RPC retry 最多 3 次。
+5. 短事务写 `status = sent` 或 `status = failed`。
+6. 如果失败后 `attempt_count` 已达到 3，写入或复用 `attempt_exhausted` webhook event。
 
 1.0 不引入 `sending/claimed_at/lease`。邮件是外部副作用，无法严格 exactly-once；如果 provider 已接受但进程在写回 `sent` 前崩溃，可能重复发送，本期接受 best-effort 语义。
 
@@ -796,7 +820,8 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - 创建 policy update：`insert radar_policy_updates` 与 `update raw item status = ingested` 同事务。
 - 写 user actions：`insert radar_user_actions`、`insert radar_email_deliveries`、`update action_calculate_status = succeeded` 同事务。
 - action completion：验证用户归属、更新 `action_items` JSON、重算顶层 status 同事务。
-- email send：锁住单条 delivery，检查 recipient，发送邮件并更新状态，同事务；必须设置严格 timeout。
+- email send：短事务递增 delivery attempt，事务外通过 `EmailService` 发送邮件，再用短事务写发送结果。
+- webhook dispatch：短事务递增 webhook event attempt，事务外发送 Lark，再用短事务写发送结果。
 
 并发策略：
 
@@ -805,6 +830,7 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - Stage 1 source adapters 可以并发，但必须在 Stage 2 前全部完成。
 - Approve 不启动实时 pipeline，避免与周期任务产生复杂竞态。
 - 唯一键和事务是最终一致性防线。
+- 当前串行模型不使用数据库抢锁或 lease。
 
 ## 20. 待实现阶段确认
 
@@ -816,7 +842,7 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 4. 邮件 subject/body/版式。
 5. API response 字段级精确契约。
 6. 日志字段、run id、脱敏和基础可观测性。
-7. 周期任务频率、timeout、backoff、Lark 重复通知间隔。
+7. 周期任务频率、timeout、backoff。
 8. classification/sandbox 如何接收 action 跳转参数。
 
 已知但本设计不建模：
@@ -825,4 +851,4 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 
 ## 21. 当前结论摘要
 
-Compliance Radar BLB 1.0 采用独立单实例 `radar-backend` worker + `classification-backend` API 的分工。系统以共享 Postgres 中的 `radar_` 表和状态机作为协作契约，通过周期任务串行推进 source 抓取、Recent Policy Updates 生成、Policy Impact 抽取、User Actions 计算和邮件发送。Policy Impact 由黑盒模块持久化并经人工 approve 后才进入 action 计算；approve 不实时触发后续流水线。Actions 用一张 `radar_user_actions` 表承载 card、affected products 和 action items；邮件通知与 Lark 告警都通过状态和 outbox 保持可恢复。
+Compliance Radar BLB 1.0 采用独立单实例 `radar-backend` worker + `classification-backend` API 的分工。系统以共享 Postgres 中的 `radar_` 表和状态机作为协作契约，通过周期任务串行推进 source 抓取、Recent Policy Updates 生成、Policy Impact 抽取、User Actions 计算、邮件发送和运营 webhook 发送。Policy Impact 由黑盒模块持久化并经人工 approve 后才进入 action 计算；approve 不实时触发后续流水线。Actions 用一张 `radar_user_actions` 表承载 card、affected products 和 action items；邮件通知与 Lark 告警都通过状态和 outbox 保持可恢复。
