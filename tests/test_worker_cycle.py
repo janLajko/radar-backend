@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-
-from radar_backend.worker.cycle import PeriodicCycle, build_cycle
+from radar_backend.worker.context import WorkerContext
+from radar_backend.worker.cycle import PeriodicCycle
 from radar_backend.worker.stages.base import StageResult
-
-
-@dataclass
-class FakeContext:
-    logger: logging.Logger
 
 
 class RecordingStage:
@@ -18,11 +11,11 @@ class RecordingStage:
         self._calls = calls
         self._fail = fail
 
-    def run(self, _context) -> StageResult:
+    def run(self, _context: WorkerContext) -> StageResult:
         self._calls.append(self.name)
         if self._fail:
             raise RuntimeError(self.name)
-        return StageResult(stage_name=self.name, processed_count=1)
+        return StageResult()
 
 
 def test_periodic_cycle_runs_stages_in_order() -> None:
@@ -34,11 +27,9 @@ def test_periodic_cycle_runs_stages_in_order() -> None:
         ]
     )
 
-    results = cycle.run_once(FakeContext(logger=logging.getLogger(__name__)))
+    cycle.run_once(WorkerContext(run_id="test-run"))
 
     assert calls == ["first", "second"]
-    assert [result.stage_name for result in results] == ["first", "second"]
-    assert [result.status for result in results] == ["succeeded", "succeeded"]
 
 
 def test_periodic_cycle_continues_after_stage_exception() -> None:
@@ -51,22 +42,6 @@ def test_periodic_cycle_continues_after_stage_exception() -> None:
         ]
     )
 
-    results = cycle.run_once(FakeContext(logger=logging.getLogger(__name__)))
+    cycle.run_once(WorkerContext(run_id="test-run"))
 
     assert calls == ["first", "second", "third"]
-    assert [result.stage_name for result in results] == ["first", "second", "third"]
-    assert [result.status for result in results] == ["succeeded", "failed", "succeeded"]
-    assert results[1].error_message == "second"
-
-
-def test_default_cycle_stage_order() -> None:
-    cycle = build_cycle()
-
-    assert [stage.name for stage in cycle.stages] == [
-        "collect_source_items",
-        "create_policy_updates",
-        "create_policy_impacts",
-        "create_user_actions",
-        "send_action_notifications",
-        "dispatch_operational_webhooks",
-    ]

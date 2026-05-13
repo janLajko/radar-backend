@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 
-class RawPolicyUpdateStatus(StrEnum):
+class RawSourceItemPolicyUpdateStatus(StrEnum):
     PENDING = "pending"
     INGESTED = "ingested"
     DISCARDED = "discarded"
@@ -17,7 +17,7 @@ class PolicyExtractStatus(StrEnum):
 
 
 class PolicyReviewStatus(StrEnum):
-    PENDING = "pending"
+    CONFIRM_NEEDED = "confirm_needed"
     APPROVED = "approved"
 
 
@@ -56,6 +56,7 @@ class WebhookEventType(StrEnum):
 
 class WebhookEntityType(StrEnum):
     RAW_POLICY_UPDATE = "raw_policy_update"
+    POLICY_IMPACT = "policy_impact"
     POLICY_EXTRACT = "policy_extract"
     ACTION_CALCULATE = "action_calculate"
     EMAIL_DELIVERY = "email_delivery"

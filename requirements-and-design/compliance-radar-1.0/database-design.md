@@ -1,6 +1,6 @@
 # Compliance Radar BLB 1.0 数据库设计
 
-最后更新：2026-05-12
+最后更新：2026-05-14
 
 本文档描述 Compliance Radar BLB 1.0 的数据库表结构设计。本文只覆盖 Radar 自有表；黑盒 Policy Impact 表由黑盒 owner 设计，不在本文中展开，但黑盒表必须能通过 `policy_update_id` 与 `radar_policy_updates.id` 关联。
 
@@ -99,7 +99,7 @@ radar_webhook_events N -> operational entities
 
 | 枚举值 | 含义 | 后续行为 |
 | --- | --- | --- |
-| `pending` | 尚未审核过 | 当 `policy_extract_status = succeeded` 时可审核 |
+| `confirm_needed` | 需要人工确认或保持不推进 | 当 `policy_extract_status = succeeded` 时可确认 |
 | `approved` | 人工审核通过 | 允许进入 user action 计算 |
 
 ### 4.4 `radar_policy_updates.action_calculate_status`
@@ -170,7 +170,7 @@ radar_webhook_events N -> operational entities
 
 `attempt_count` 表示已经完成的 durable attempts。计数不在重型操作前递增，而是在操作返回后，和状态写回放在同一个短事务中递增。如果进程在操作中途崩溃，本次 attempt 不计数，后续仍按各 stage 的幂等或重复发送语义处理。
 
-当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 写入或更新一条 `attempt_exhausted` webhook event。Webhook 发送由 Stage 6 按 `status/attempt_count` 状态驱动。
+当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 尝试创建一条 `attempt_exhausted` webhook event。Webhook 发送由 Stage 6 按 `status/attempt_count` 状态驱动。
 
 ## 5. 表结构详情
 
@@ -236,7 +236,7 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 | `effective_date` | `date` | 否 |  |  | 政策级生效日期，可为空 |
 | `policy_extract_status` | `text` | 是 | `'pending'` | check enum；建议索引 | policy impact 抽取状态 |
 | `policy_extract_attempt_count` | `integer` | 是 | `0` | check `>= 0` | policy impact 抽取 durable 尝试次数 |
-| `policy_review_status` | `text` | 是 | `'pending'` | check enum；建议索引 | 人工审核状态 |
+| `policy_review_status` | `text` | 是 | `'confirm_needed'` | check enum；建议索引 | 人工审核状态 |
 | `action_calculate_status` | `text` | 是 | `'pending'` | check enum；建议索引 | user actions 计算状态 |
 | `action_calculate_attempt_count` | `integer` | 是 | `0` | check `>= 0` | user actions 计算 durable 尝试次数 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
@@ -248,7 +248,7 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 PRIMARY KEY (id)
 UNIQUE (raw_source_item_id)
 CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed'))
-CHECK (policy_review_status IN ('pending', 'approved'))
+CHECK (policy_review_status IN ('confirm_needed', 'approved'))
 CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed'))
 CHECK (policy_extract_attempt_count >= 0)
 CHECK (action_calculate_attempt_count >= 0)
@@ -276,7 +276,7 @@ ON radar_policy_updates (policy_review_status, action_calculate_status, action_c
 
 ```text
 policy_extract_status = pending
-policy_review_status = pending
+policy_review_status = confirm_needed
 action_calculate_status = pending
 ```
 
@@ -285,7 +285,7 @@ action_calculate_status = pending
 ```text
 approve only if:
 policy_extract_status = succeeded
-AND policy_review_status = pending
+AND policy_review_status = confirm_needed
 ```
 
 1.0 不单独保存 `approved_by/approved_at`。Review API 使用 `classification-backend` 现有 admin/internal auth，不引入单独审核 token；如果未来需要严格审计，应新增 review audit 表，而不是复用 `updated_at`。
@@ -465,7 +465,7 @@ LIMIT 1
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
 | `event_type` | `text` | 是 |  | unique 组合项；check enum | 事件类型 |
-| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `raw_policy_update` / `policy_extract` / `action_calculate` / `email_delivery` |
+| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `raw_policy_update` / `policy_impact` / `policy_extract` / `action_calculate` / `email_delivery` |
 | `entity_id` | `bigint` | 是 |  | unique 组合项 | 关联实体 ID |
 | `channel` | `text` | 是 | `'lark_team'` | unique 组合项 | 通知渠道 |
 | `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照；内部结构由发送器契约定义 |
@@ -480,7 +480,7 @@ LIMIT 1
 PRIMARY KEY (id)
 UNIQUE (event_type, entity_type, entity_id, channel)
 CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted'))
-CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery'))
+CHECK (entity_type IN ('raw_policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery'))
 CHECK (jsonb_typeof(payload) = 'object')
 CHECK (status IN ('pending', 'sent', 'failed'))
 CHECK (attempt_count >= 0)
@@ -495,13 +495,14 @@ ON radar_webhook_events (status, attempt_count, created_at);
 
 发送规则：
 
+- 业务 stage 只用 insert-if-absent 创建事件；同一事件已存在时不更新 `payload/status/attempt_count`。
 - 扫描 `status IN ('pending', 'failed') AND attempt_count < 3`。
 - Lark webhook 调用通过 `WebhookService` 在事务外发生，内部 RPC retry 最多 3 次。
 - 发送成功后用短事务设置 `status = sent` 并递增 `attempt_count`。
 - 发送失败后用短事务设置 `status = failed` 并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
 - Stage 6 发送后只用普通 `UPDATE` 推进 `status` 和 `attempt_count`。
 
-`entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
+`entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_impact` / `policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 
 ## 6. 关键事务边界
 
@@ -526,7 +527,7 @@ insert radar_email_deliveries for active recipients
 update radar_policy_updates.action_calculate_status = succeeded
 ```
 
-如果计算失败，设置 `action_calculate_status = failed`，不写入 user actions 或 email deliveries。若失败后 `action_calculate_attempt_count` 已达到上限，则写入或更新 `attempt_exhausted` webhook event。
+如果计算失败，设置 `action_calculate_status = failed`，不写入 user actions 或 email deliveries。若失败后 `action_calculate_attempt_count` 已达到上限，则尝试创建 `attempt_exhausted` webhook event。
 
 邮件发送必须在事务提交后进行。
 
@@ -583,7 +584,7 @@ ALTER TABLE radar_policy_updates
   ADD CONSTRAINT chk_radar_policy_extract_status
   CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed')),
   ADD CONSTRAINT chk_radar_policy_review_status
-  CHECK (policy_review_status IN ('pending', 'approved')),
+  CHECK (policy_review_status IN ('confirm_needed', 'approved')),
   ADD CONSTRAINT chk_radar_action_calculate_status
   CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed')),
   ADD CONSTRAINT chk_radar_policy_extract_attempt_count
@@ -617,7 +618,7 @@ ALTER TABLE radar_webhook_events
   ADD CONSTRAINT chk_radar_webhook_events_event_type
   CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   ADD CONSTRAINT chk_radar_webhook_events_entity_type
-  CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+  CHECK (entity_type IN ('raw_policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
   ADD CONSTRAINT chk_radar_webhook_events_status
   CHECK (status IN ('pending', 'sent', 'failed')),
   ADD CONSTRAINT chk_radar_webhook_events_payload_object

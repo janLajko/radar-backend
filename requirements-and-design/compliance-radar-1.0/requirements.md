@@ -1,6 +1,6 @@
 # Compliance Radar BLB 1.0 需求与设计结论
 
-最后更新：2026-05-12
+最后更新：2026-05-14
 
 本文档沉淀 Compliance Radar BLB 1.0 已确认的产品边界、系统边界、主流程、状态机、数据契约和实现约束。它不是完整 PRD，也不是最终 API 细则；字段级数据库设计见 `database-design.md`，主流程时序见 `sequence-diagrams.md`。
 
@@ -207,6 +207,13 @@ run_periodic_cycle():
 - 所有 source 抓取完成并完成 raw item 写入/跳过后，才进入 Stage 2。
 - 任何外部调用都不在数据库事务内，包括 source fetch、PDF 下载、LLM、黑盒函数、CMS、Email Provider 和 Lark webhook。
 - 数据库事务只包本地状态推进和原子写入。
+
+骨架实现约束：
+
+- `WorkerContext` 只承载本轮 `run_id`，不放 settings、db、repository、service 或 logger。
+- stage 技术依赖随用随取；数据库通过 `radar_backend.db` 模块级 gateway 获取连接，repository 是模块级函数，service 是普通工具类。
+- repository 函数必须显式接收 connection；跨 repository 事务由调用方使用 `acquire_connection_with_transaction()` 包住。
+- `StageResult` 只保留 `run(context) -> StageResult` 契约；当前不承载控制字段，编排容器也不读取它。
 
 每个周期都是 state-driven：
 
@@ -421,14 +428,14 @@ POST /api/compliance-radar/review/policy-impacts/{policy_update_id}/approve
 
 1.0 不提供驳回动作：
 
-- 如果不准备推进，就保持 `policy_review_status = pending`。
+- 如果不准备推进，就保持 `policy_review_status = confirm_needed`。
 - 如果数据不正确，reviewer 修改正确后再 approve。
 
 Approve 规则：
 
 ```text
 policy_extract_status = succeeded
-AND policy_review_status = pending
+AND policy_review_status = confirm_needed
 ```
 
 Approve 前调用黑盒 `validate_policy_impact(policy_update_id)`。成功后只更新：
@@ -469,11 +476,11 @@ radar_policy_updates.action_calculate_status
 
 ```text
 policy_extract_status = pending / succeeded / failed
-policy_review_status = pending / approved
+policy_review_status = confirm_needed / approved
 action_calculate_status = pending / succeeded / failed
 ```
 
-创建 policy update 时三者默认都是 `pending`。
+创建 policy update 时，`policy_extract_status` 和 `action_calculate_status` 默认是 `pending`，`policy_review_status` 默认是 `confirm_needed`。
 
 ### 10.3 User Action
 
@@ -567,17 +574,17 @@ webhook:
 
 `attempt_count` 表示已经完成的 durable attempts。它不在重型操作前递增，而是在外部调用、LLM、黑盒计算、邮件发送或 webhook 发送返回后，和状态写回放在同一个短事务中递增。
 
-一旦某条记录进入重型操作，stage 实现应使用 `finally` 或等价的统一收口逻辑写回本次 durable attempt：递增对应 `attempt_count`、更新成功/失败状态，并在失败且达到上限时写入或复用 `attempt_exhausted` webhook event。
+一旦某条记录进入重型操作，stage 实现应使用 `finally` 或等价的统一收口逻辑写回本次 durable attempt：递增对应 `attempt_count`、更新成功/失败状态，并在失败且达到上限时尝试创建 `attempt_exhausted` webhook event。
 
 如果进程在重型操作中途崩溃，本次 attempt 不计数，后续周期会重新尝试。黑盒函数必须通过幂等契约承受重试；email/webhook 这类外部副作用接受 best-effort 语义。
 
-当某个 durable attempt 达到上限后，worker 写入或复用一条 webhook event：
+当某个 durable attempt 达到上限后，worker 尝试创建一条 webhook event：
 
 ```text
 event_type = attempt_exhausted
 ```
 
-Policy Impact 抽取成功后，worker 写入或复用一条 webhook event：
+Policy Impact 抽取成功后，worker 尝试创建一条 webhook event：
 
 ```text
 event_type = policy_impact_ready_for_review
@@ -707,7 +714,7 @@ LIMIT 1
 3. 如果 recipient active，事务外通过 `EmailService` 调用 Email Provider，内部 RPC retry 最多 3 次。
 4. 短事务写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
 5. 发送前会检查 recipient active，但检查后立即 unsubscribe 的极小竞态本期接受。
-6. 如果失败后 `attempt_count` 已达到 3，写入或复用 `attempt_exhausted` webhook event。
+6. 如果失败后 `attempt_count` 已达到 3，尝试创建 `attempt_exhausted` webhook event。
 
 1.0 不引入 `sending/claimed_at/lease`。邮件是外部副作用，无法严格 exactly-once；如果 provider 已接受但进程在写回 `sent` 前崩溃，可能重复发送，本期接受 best-effort 语义。
 
@@ -847,6 +854,12 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - 唯一键和事务是最终一致性防线。
 - 当前串行模型不使用数据库抢锁或 lease。
 
+运行日志：
+
+- worker 同时输出控制台日志和 `logs/radar-worker.log`。
+- 文件日志按服务器本地时区每日零点滚动，保留 7 天。
+- 周期和 stage 日志必须包含 `run_id`，并记录耗时，耗时单位使用 seconds。
+
 ## 20. 待实现阶段确认
 
 以下内容不阻塞当前主设计，但实现时需要落细：
@@ -856,7 +869,7 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 3. 黑盒 Policy Impact schema 和 review UI 编辑方式。
 4. 邮件 subject/body/版式。
 5. API response 字段级精确契约。
-6. 日志字段、run id、脱敏和基础可观测性。
+6. 业务日志字段、脱敏和更细粒度可观测性。
 7. 周期任务频率、timeout、backoff。
 8. classification/sandbox 如何接收 action 跳转参数。
 

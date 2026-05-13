@@ -70,7 +70,7 @@
         <mxCell id="classificationContainer" value="classification-backend" style="swimlane;html=1;startSize=38;rounded=1;whiteSpace=wrap;fillColor=#F7F9FC;strokeColor=#516482;fontSize=16;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1125" y="100" width="340" height="620" as="geometry" />
         </mxCell>
-        <mxCell id="migrationOwner" value="HTTP/API owner&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;user APIs, review API, unsubscribe API&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="migrationOwner" value="HTTP/API/auth owner&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;user APIs, review API, unsubscribe API&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="1150" y="150" width="290" height="62" as="geometry" />
         </mxCell>
         <mxCell id="authApi" value="Existing Auth + User Context" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
@@ -85,7 +85,7 @@
         <mxCell id="recipientApi" value="Recipients + Unsubscribe API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;active / unsubscribed / deleted&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#516482;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="1150" y="455" width="290" height="62" as="geometry" />
         </mxCell>
-        <mxCell id="reviewApi" value="Review API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;view / edit / approve policy impact&lt;br&gt;no separate review token in 1.0&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF8E8;strokeColor=#CC8A00;fontSize=13;" vertex="1" parent="1">
+        <mxCell id="reviewApi" value="Review API&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;view / edit / approve policy impact&lt;br&gt;existing admin/internal auth&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF8E8;strokeColor=#CC8A00;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="1150" y="535" width="290" height="76" as="geometry" />
         </mxCell>
         <mxCell id="executionApi" value="Classification / Sandbox / Calculator&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;executes reclassify_product / recalculate_tariff&lt;br&gt;Radar only supplies action context&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#EAF3FF;strokeColor=#6EA8E5;fontSize=13;" vertex="1" parent="1">

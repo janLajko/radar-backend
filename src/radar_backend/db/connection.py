@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
@@ -10,55 +9,75 @@ from psycopg_pool import ConnectionPool
 from radar_backend.config import Settings
 
 
-@dataclass
-class Database:
-    settings: Settings
-    _pool: ConnectionPool[Connection] = field(init=False)
-    _opened: bool = field(init=False, default=False)
+DB_POOL_NAME = "radar-backend"
+DB_POOL_APPLICATION_NAME = "radar-backend"
 
-    def __post_init__(self) -> None:
-        self._pool = ConnectionPool(
-            conninfo=self.settings.database_dsn_radar,
-            min_size=self.settings.db_pool_min_size,
-            max_size=self.settings.db_pool_max_size,
-            timeout=self.settings.db_pool_timeout_seconds,
-            open=False,
-        )
+DB_POOL_MIN_SIZE = 1
+DB_POOL_MAX_SIZE = 10
+DB_POOL_ACQUIRE_TIMEOUT_SECONDS = 60
+DB_POOL_CONNECT_TIMEOUT_SECONDS = 10
+DB_POOL_MAX_WAITING = 10
 
-    @contextmanager
-    def connection(self) -> Iterator[Connection]:
-        self._require_open()
-        with self._pool.connection() as conn:
+_pool: ConnectionPool[Connection] | None = None
+
+
+def open_pool(settings: Settings) -> None:
+    global _pool
+
+    if _pool is not None:
+        return
+
+    pool = _create_pool(settings)
+
+    try:
+        pool.open(wait=True)
+    except Exception:
+        pool.close()
+        raise
+
+    _pool = pool
+
+
+def close_pool() -> None:
+    global _pool
+
+    if _pool is not None:
+        _pool.close()
+
+    _pool = None
+
+
+@contextmanager
+def acquire_connection() -> Iterator[Connection]:
+    with _require_open().connection() as conn:
+        yield conn
+
+
+@contextmanager
+def acquire_connection_with_transaction() -> Iterator[Connection]:
+    with _require_open().connection() as conn:
+        with conn.transaction():
             yield conn
 
-    @contextmanager
-    def transaction(self) -> Iterator[Connection]:
-        self._require_open()
-        with self._pool.connection() as conn:
-            with conn.transaction():
-                yield conn
 
-    def open(self) -> None:
-        if self._opened:
-            return
+def _create_pool(settings: Settings) -> ConnectionPool[Connection]:
+    return ConnectionPool(
+        conninfo=settings.database_dsn_radar,
+        kwargs={
+            "application_name": DB_POOL_APPLICATION_NAME,
+            "connect_timeout": DB_POOL_CONNECT_TIMEOUT_SECONDS,
+        },
+        min_size=DB_POOL_MIN_SIZE,
+        max_size=DB_POOL_MAX_SIZE,
+        name=DB_POOL_NAME,
+        timeout=DB_POOL_ACQUIRE_TIMEOUT_SECONDS,
+        max_waiting=DB_POOL_MAX_WAITING,
+        check=ConnectionPool.check_connection,
+        open=False,
+    )
 
-        try:
-            self._pool.open(wait=True)
-        except Exception:
-            self._pool.close()
-            raise
 
-        self._opened = True
-
-    def close(self) -> None:
-        if self._opened:
-            self._pool.close()
-            self._opened = False
-
-    def check(self) -> None:
-        self._require_open()
-        self._pool.check()
-
-    def _require_open(self) -> None:
-        if not self._opened:
-            raise RuntimeError("database pool is not open")
+def _require_open() -> ConnectionPool[Connection]:
+    if _pool is None:
+        raise RuntimeError("database pool is not open")
+    return _pool

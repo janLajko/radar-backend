@@ -59,7 +59,7 @@ CREATE TABLE radar_policy_updates (
   effective_date date,
   policy_extract_status text NOT NULL DEFAULT 'pending',
   policy_extract_attempt_count integer NOT NULL DEFAULT 0,
-  policy_review_status text NOT NULL DEFAULT 'pending',
+  policy_review_status text NOT NULL DEFAULT 'confirm_needed',
   action_calculate_status text NOT NULL DEFAULT 'pending',
   action_calculate_attempt_count integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -70,7 +70,7 @@ CREATE TABLE radar_policy_updates (
   CONSTRAINT chk_radar_policy_extract_status
     CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed')),
   CONSTRAINT chk_radar_policy_review_status
-    CHECK (policy_review_status IN ('pending', 'approved')),
+    CHECK (policy_review_status IN ('confirm_needed', 'approved')),
   CONSTRAINT chk_radar_action_calculate_status
     CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed')),
   CONSTRAINT chk_radar_policy_extract_attempt_count
@@ -175,7 +175,7 @@ CREATE TABLE radar_webhook_events (
   CONSTRAINT chk_radar_webhook_events_event_type
     CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   CONSTRAINT chk_radar_webhook_events_entity_type
-    CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+    CHECK (entity_type IN ('raw_policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
   CONSTRAINT chk_radar_webhook_events_status
     CHECK (status IN ('pending', 'sent', 'failed')),
   CONSTRAINT chk_radar_webhook_events_payload_object

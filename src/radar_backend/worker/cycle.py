@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from time import perf_counter
 
 from radar_backend.worker.context import WorkerContext
-from radar_backend.worker.stages.base import StageResult, WorkerStage
+from radar_backend.worker.stages.base import WorkerStage
 from radar_backend.worker.stages.collect_source_items import CollectSourceItemsStage
 from radar_backend.worker.stages.create_policy_impacts import CreatePolicyImpactsStage
 from radar_backend.worker.stages.create_policy_updates import CreatePolicyUpdatesStage
@@ -12,42 +13,42 @@ from radar_backend.worker.stages.create_user_actions import CreateUserActionsSta
 from radar_backend.worker.stages.dispatch_operational_webhooks import DispatchOperationalWebhooksStage
 from radar_backend.worker.stages.send_action_notifications import SendActionNotificationsStage
 
+logger = logging.getLogger(__name__)
+
 
 class PeriodicCycle:
-    def __init__(self, stages: Sequence[WorkerStage], logger: logging.Logger | None = None) -> None:
+    def __init__(self, stages: Sequence[WorkerStage]) -> None:
         self._stages = tuple(stages)
-        self._logger = logger or logging.getLogger(__name__)
 
-    @property
-    def stages(self) -> tuple[WorkerStage, ...]:
-        return self._stages
-
-    def run_once(self, context: WorkerContext) -> list[StageResult]:
-        results: list[StageResult] = []
-        self._logger.info("periodic cycle started")
+    def run_once(self, context: WorkerContext) -> None:
+        cycle_started_at = perf_counter()
+        logger.info("periodic cycle started: run_id=%s", context.run_id)
 
         for stage in self._stages:
-            self._logger.info("stage started: %s", stage.name)
+            stage_started_at = perf_counter()
+            logger.info("stage started: %s run_id=%s", stage.name, context.run_id)
             try:
-                result = stage.run(context)
-            except Exception as exc:
-                self._logger.exception("stage failed: %s", stage.name)
-                result = StageResult(
-                    stage_name=stage.name,
-                    status="failed",
-                    error_message=str(exc),
+                stage.run(context)
+            except Exception:
+                logger.exception(
+                    "stage failed: %s run_id=%s duration_seconds=%.3f",
+                    stage.name,
+                    context.run_id,
+                    perf_counter() - stage_started_at,
+                )
+            else:
+                logger.info(
+                    "stage finished: %s run_id=%s duration_seconds=%.3f",
+                    stage.name,
+                    context.run_id,
+                    perf_counter() - stage_started_at,
                 )
 
-            results.append(result)
-            self._logger.info(
-                "stage finished: %s status=%s processed_count=%s",
-                result.stage_name,
-                result.status,
-                result.processed_count,
-            )
-
-        self._logger.info("periodic cycle finished")
-        return results
+        logger.info(
+            "periodic cycle finished: run_id=%s duration_seconds=%.3f",
+            context.run_id,
+            perf_counter() - cycle_started_at,
+        )
 
 
 def build_cycle() -> PeriodicCycle:

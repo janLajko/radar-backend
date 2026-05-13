@@ -1,6 +1,6 @@
 # Compliance Radar BLB 1.0 时序图
 
-最后更新：2026-05-12
+最后更新：2026-05-14
 
 本文档使用 https://sequencediagram.org/ 支持的文本格式编写。每个代码块是一张独立时序图，可以单独复制到 sequencediagram.org 中渲染。
 
@@ -121,7 +121,7 @@ loop each selected raw item
       RadarWorker->SharedDB: begin short transaction
       RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
       opt new policy_update_attempt_count reached 3
-        RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
+        RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id
       end
       RadarWorker->SharedDB: commit
       RadarWorker->RadarWorker: stop processing this raw item
@@ -140,7 +140,7 @@ loop each selected raw item
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
     opt new policy_update_attempt_count reached 3
-      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id
     end
     RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this raw item
@@ -151,7 +151,7 @@ loop each selected raw item
     note right of RadarWorker: discard_reason is persisted\nfor prompt quality debugging
   else should_ingest = true
     RadarWorker->SharedDB: begin transaction
-    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and original_text\npolicy_extract_status = pending\npolicy_review_status = pending\naction_calculate_status = pending
+    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and original_text\npolicy_extract_status = pending\npolicy_review_status = confirm_needed\naction_calculate_status = pending
     RadarWorker->SharedDB: set policy_update_status = ingested\nincrement policy_update_attempt_count
     RadarWorker->SharedDB: commit
   end
@@ -188,13 +188,13 @@ loop each selected policy update
   alt extract succeeded
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_extract_status = succeeded\nincrement policy_extract_attempt_count
-    RadarWorker->SharedDB: upsert radar_webhook_events\npolicy_impact_ready_for_review for policy_update_id
+    RadarWorker->SharedDB: insert webhook event if absent\npolicy_impact_ready_for_review for policy_update_id\nentity_type = policy_impact
     RadarWorker->SharedDB: commit
   else extract failed
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_extract_status = failed\nincrement policy_extract_attempt_count
     opt new policy_extract_attempt_count reached 3
-      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for policy_update_id
     end
     RadarWorker->SharedDB: commit
   end
@@ -247,7 +247,7 @@ loop each selected policy update
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set action_calculate_status = failed\nincrement action_calculate_attempt_count
     opt new action_calculate_attempt_count reached 3
-      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for policy_update_id
     end
     RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this policy update
@@ -315,7 +315,7 @@ loop select and send one delivery at a time
         RadarWorker->SharedDB: begin short transaction
         RadarWorker->SharedDB: set status = failed\nincrement attempt_count
         opt new attempt_count reached 3
-          RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for delivery_id
+          RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for delivery_id
         end
         RadarWorker->SharedDB: commit
       end
@@ -386,7 +386,7 @@ participant SharedDB
 participant PolicyImpactBlackBox
 
 Reviewer->ReviewUI: open review page
-ReviewUI->ClassificationBackend: GET /review/policy-impacts/{policy_update_id}
+ReviewUI->ClassificationBackend: GET /api/compliance-radar/review/policy-impacts/{policy_update_id}
 note right of ClassificationBackend: All review endpoints require existing admin/internal auth
 ClassificationBackend->SharedDB: load policy update
 SharedDB-->ClassificationBackend: policy update
@@ -396,8 +396,8 @@ ClassificationBackend-->ReviewUI: policy update + policy_impact
 
 opt reviewer edits policy impact
   Reviewer->ReviewUI: edit and save policy impact
-  ReviewUI->ClassificationBackend: PUT /review/policy-impacts/{policy_update_id}
-  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
+  ReviewUI->ClassificationBackend: PUT /api/compliance-radar/review/policy-impacts/{policy_update_id}
+  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = confirm_needed
   ClassificationBackend->PolicyImpactBlackBox: validate_policy_impact(policy_update_id, policy_impact)
   PolicyImpactBlackBox-->ClassificationBackend: {success, message}
 
@@ -410,8 +410,8 @@ opt reviewer edits policy impact
 end
 
 alt reviewer approves
-  ReviewUI->ClassificationBackend: POST /review/policy-impacts/{policy_update_id}/approve
-  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
+  ReviewUI->ClassificationBackend: POST /api/compliance-radar/review/policy-impacts/{policy_update_id}/approve
+  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = confirm_needed
   ClassificationBackend->PolicyImpactBlackBox: validate_policy_impact(policy_update_id)
   PolicyImpactBlackBox-->ClassificationBackend: {success, message}
 
