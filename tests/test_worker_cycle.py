@@ -38,6 +38,7 @@ def test_periodic_cycle_runs_stages_in_order() -> None:
 
     assert calls == ["first", "second"]
     assert [result.stage_name for result in results] == ["first", "second"]
+    assert [result.status for result in results] == ["succeeded", "succeeded"]
 
 
 def test_periodic_cycle_continues_after_stage_exception() -> None:
@@ -53,7 +54,9 @@ def test_periodic_cycle_continues_after_stage_exception() -> None:
     results = cycle.run_once(FakeContext(logger=logging.getLogger(__name__)))
 
     assert calls == ["first", "second", "third"]
-    assert [result.stage_name for result in results] == ["first", "third"]
+    assert [result.stage_name for result in results] == ["first", "second", "third"]
+    assert [result.status for result in results] == ["succeeded", "failed", "succeeded"]
+    assert results[1].error_message == "second"
 
 
 def test_default_cycle_stage_order() -> None:

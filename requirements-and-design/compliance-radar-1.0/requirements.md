@@ -590,12 +590,13 @@ Webhook event 写入规则：
 - event 默认 `status = pending`。
 - 业务 stage 直接通过 repository 写入 `radar_webhook_events`。
 - 唯一键保证同一事件按实体幂等。
+- 业务 stage 只尝试创建 webhook event；同一事件已存在时不更新。
 
 Stage 6 `dispatch_operational_webhooks()` 按状态发送 Lark Team webhook：
 
 1. 选择一条 `status in ('pending', 'failed') and attempt_count < 3` 的 webhook event。
 2. 在事务外通过 `WebhookService` 调用 Lark webhook，内部 RPC retry 最多 3 次。
-3. 用短事务写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
+3. 用普通 `UPDATE` 在短事务中写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
 
 attempt count 是纯后端控制信号，不暴露给普通用户 API，也不暴露给 review API/UI。
 

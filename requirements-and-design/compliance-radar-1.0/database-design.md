@@ -67,6 +67,7 @@ radar_webhook_events N -> operational entities
 - `radar_user_actions(user_id, policy_update_id)` 加唯一约束，保证一个用户对一个 policy update 最多一条 action 记录。
 - `radar_email_deliveries(user_action_id, recipient_id)` 加唯一约束，保证同一 action 对同一个 recipient 最多一封邮件。
 - `radar_webhook_events(event_type, entity_type, entity_id, channel)` 加唯一约束，保证同一个运营事件按实体去重。
+- `radar_webhook_events` 的业务写入语义是 insert-if-absent：同一事件已存在时不更新。
 
 关系约束边界：
 
@@ -498,6 +499,7 @@ ON radar_webhook_events (status, attempt_count, created_at);
 - Lark webhook 调用通过 `WebhookService` 在事务外发生，内部 RPC retry 最多 3 次。
 - 发送成功后用短事务设置 `status = sent` 并递增 `attempt_count`。
 - 发送失败后用短事务设置 `status = failed` 并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
+- Stage 6 发送后只用普通 `UPDATE` 推进 `status` 和 `attempt_count`。
 
 `entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 

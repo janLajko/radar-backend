@@ -30,14 +30,19 @@ class PeriodicCycle:
             self._logger.info("stage started: %s", stage.name)
             try:
                 result = stage.run(context)
-            except Exception:
+            except Exception as exc:
                 self._logger.exception("stage failed: %s", stage.name)
-                continue
+                result = StageResult(
+                    stage_name=stage.name,
+                    status="failed",
+                    error_message=str(exc),
+                )
 
             results.append(result)
             self._logger.info(
-                "stage finished: %s processed_count=%s",
+                "stage finished: %s status=%s processed_count=%s",
                 result.stage_name,
+                result.status,
                 result.processed_count,
             )
 

@@ -11,6 +11,7 @@ from radar_backend.config import Settings, load_dotenv
 from radar_backend.db import Database
 from radar_backend.db.repositories import Repositories
 from radar_backend.logging_config import configure_logging
+from radar_backend.services import Services
 from radar_backend.worker.context import WorkerContext
 from radar_backend.worker.cycle import PeriodicCycle, build_cycle
 
@@ -31,7 +32,8 @@ def main(argv: list[str] | None = None) -> int:
         context = WorkerContext(
             settings=settings,
             db=db,
-            repositories=Repositories.create(db),
+            repositories=Repositories.create(),
+            services=Services.create(),
             logger=logger,
         )
         cycle = build_cycle()

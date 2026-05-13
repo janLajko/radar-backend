@@ -17,12 +17,16 @@ Run one worker cycle:
 
 ```bash
 python -m radar_backend.worker.runner --once
+# or
+radar-worker --once
 ```
 
 Run continuously:
 
 ```bash
 python -m radar_backend.worker.runner
+# or
+radar-worker
 ```
 
 The worker loads environment variables from `.env` by default.

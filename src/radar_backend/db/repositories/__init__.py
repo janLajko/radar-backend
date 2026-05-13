@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from radar_backend.db.connection import Database
 from radar_backend.db.repositories.email_deliveries import EmailDeliveriesRepository
 from radar_backend.db.repositories.notification_recipients import NotificationRecipientsRepository
 from radar_backend.db.repositories.policy_updates import PolicyUpdatesRepository
@@ -21,14 +20,14 @@ class Repositories:
     webhook_events: WebhookEventsRepository
 
     @classmethod
-    def create(cls, db: Database) -> "Repositories":
+    def create(cls) -> "Repositories":
         return cls(
-            raw_source_items=RawSourceItemsRepository(db),
-            policy_updates=PolicyUpdatesRepository(db),
-            user_actions=UserActionsRepository(db),
-            notification_recipients=NotificationRecipientsRepository(db),
-            email_deliveries=EmailDeliveriesRepository(db),
-            webhook_events=WebhookEventsRepository(db),
+            raw_source_items=RawSourceItemsRepository(),
+            policy_updates=PolicyUpdatesRepository(),
+            user_actions=UserActionsRepository(),
+            notification_recipients=NotificationRecipientsRepository(),
+            email_deliveries=EmailDeliveriesRepository(),
+            webhook_events=WebhookEventsRepository(),
         )
 
 
