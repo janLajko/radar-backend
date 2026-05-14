@@ -130,7 +130,7 @@ loop each selected raw item
     end
   end
 
-  RadarWorker->LLM: filter + generate briefing\nraw_content + attachment context
+  RadarWorker->LLM: filter + generate briefing\nsource_content + attachment context
   alt transient LLM failure
     LLM->LLM: retry with backoff\nup to 3 RPC attempts
   end
@@ -148,10 +148,9 @@ loop each selected raw item
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_update_status = discarded\nincrement policy_update_attempt_count
     RadarWorker->SharedDB: commit
-    note right of RadarWorker: discard_reason is persisted\nfor prompt quality debugging
   else should_ingest = true
     RadarWorker->SharedDB: begin transaction
-    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and original_text\npolicy_extract_status = pending\npolicy_review_status = confirm_needed\naction_calculate_status = pending
+    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and source_content\npolicy_extract_status = pending\npolicy_review_status = confirm_needed\naction_calculate_status = pending
     RadarWorker->SharedDB: set policy_update_status = ingested\nincrement policy_update_attempt_count
     RadarWorker->SharedDB: commit
   end

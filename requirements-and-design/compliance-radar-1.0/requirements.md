@@ -60,7 +60,7 @@ Recent Policy Updates 是全局政策更新流：
 文章过滤和 briefing 生成在同一次 LLM 调用中完成：
 
 - 相关文章创建 `radar_policy_updates`。
-- 不相关文章标记为 `discarded`，并保存 `discard_reason` 用于 debug prompt 质量。
+- 不相关文章标记为 `discarded`。
 
 Recent Updates 不向普通用户暴露：
 
@@ -255,19 +255,20 @@ adapter 负责抓取和标准化，不负责判断是否进入 Recent Updates。
 type RawSourceCandidate = {
   source_item_key: string
   source_url: string
-  title: string
+  source_title: string
   published_at: string | null
-  raw_content: string
-  raw_metadata: object
+  source_content: string
+  source_metadata: object
   pdf_urls: string[]
+  reference_number: string | null
 }
 ```
 
 约束：
 
 - `source_item_key` 必须稳定。
-- `raw_content` 是 LLM 判断和 briefing 的主要文本来源。
-- `raw_metadata` 是 source 域只读补充快照；本文不定义内部 key。
+- `source_content` 是 LLM 判断和 briefing 的主要文本来源。
+- `source_metadata` 是 source 域只读补充快照；本文不定义内部 key。
 - `pdf_urls` 只保存 URL，不保存 PDF 正文。
 - adapter 内部网络请求做 RPC 级短重试。
 
@@ -323,30 +324,32 @@ one radar_policy_update -> exactly one radar_raw_source_item
 - 一个 raw item 拆成多个 policy updates。
 - 跨 source 语义去重。
 
-LLM 输出只负责一个合并判断：
+Stage 2 生成的 policy update draft：
 
 ```ts
 type PolicyUpdateDraft = {
   should_ingest: boolean
-  discard_reason: string | null
+  source_title: string
   reference_number: string | null
   headline: string
   summary: string
-  briefing_markdown: string
+  briefing: string
   effective_date: string | null
+  source_metadata_patch: object
 }
 ```
 
 语义：
 
-- `should_ingest = false`：raw item 标记 `discarded`，保存 `discard_reason`。
+- `should_ingest = false`：raw item 标记 `discarded`。
 - `should_ingest = true`：创建 `radar_policy_updates`。
-- `headline/summary/briefing_markdown` 必须非空。
-- `source_key/source_label/source_url/pdf_urls/published_at/raw_source_item_id` 从 raw item 拷贝，不由 LLM 决定。
-- `original_text` 来自 raw item 正文清洗结果，不由 LLM 生成。
+- `headline/summary/briefing` 必须非空。
+- `source_key/source_label/source_url/source_content/pdf_urls/published_at/raw_source_item_id` 从 raw item 拷贝，不由 LLM 决定。
+- `source_title/reference_number` 以 raw item 字段为基础，Stage 2 可用 LLM 提取结果补充或修正。
+- `source_metadata` 以 raw item `source_metadata` 为基础，Stage 2 可按需补充 source attribution 字段，如 `document_type/agency`。
 - LLM 不输出 topic、impact level、user action、policy impact。
 
-`reference_number` 是源站自己的可读编号，可为空、可重复，不是主键或去重键。
+`effective_date` 优先从 source metadata 的日期候选中解析；不足时由 LLM 从正文提取，仍不能确定则为空。
 
 ## 8. Policy Impact 黑盒
 
@@ -790,7 +793,7 @@ page_size
 published_at desc nulls last, created_at desc
 ```
 
-列表返回 policy update 展示所需字段；详情返回 `briefing_markdown`、`original_text`、`pdf_urls` 等详情字段。普通用户 API 不返回内部状态、attempt count 或黑盒 policy impact。
+列表返回 policy update 展示所需字段；详情返回 `briefing`、`source_content`、`pdf_urls` 等详情字段。普通用户 API 不返回内部状态、attempt count 或黑盒 policy impact。
 
 具体 response style 在编码时与 `classification-backend` 既有风格对齐。
 
@@ -818,7 +821,7 @@ JSONB 使用边界：
 - 只把同一业务域、只读或少量变更、不作为核心查询条件的字段抱团。
 - 数据库只约束 JSON root type。
 - 内部 shape 由应用层校验。
-- 本文不定义 `raw_metadata/source_metadata/payload` 的内部 keys，避免误导实现。
+- 本文不定义 `source_metadata/payload` 的内部 keys，避免误导实现。
 
 ## 18. 用户可见性
 

@@ -186,13 +186,13 @@ radar_webhook_events N -> operational entities
 | `source_label` | `text` | 是 |  |  | source 展示名称快照，来自配置文件 |
 | `source_item_key` | `text` | 是 |  | unique 组合项 | adapter 产出的稳定去重键 |
 | `source_url` | `text` | 是 |  |  | 原文 URL |
-| `title` | `text` | 是 |  |  | source item 标题 |
-| `published_at` | `timestamptz` | 否 |  |  | 源站发布时间 |
+| `source_metadata` | `jsonb` | 是 | `'{}'::jsonb` | check object | source adapter 产出的只读补充快照，不作为 1.0 查询条件 |
+| `source_title` | `text` | 是 |  |  | 源站原始标题 |
+| `source_content` | `text` | 是 |  |  | 清洗后的正文文本，作为 LLM 主要输入 |
 | `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表，不存 PDF 正文 |
-| `raw_metadata` | `jsonb` | 是 | `'{}'::jsonb` | check object | source adapter 产出的只读补充快照，不作为 1.0 查询条件 |
-| `raw_content` | `text` | 是 |  |  | 清洗后的正文文本，作为 LLM 主要输入 |
+| `reference_number` | `text` | 否 |  |  | 源站自己的可读编号，如 docket/document/notice number |
+| `published_at` | `timestamptz` | 否 |  |  | 源站发布时间 |
 | `policy_update_status` | `text` | 是 | `'pending'` | check enum；建议索引 | raw item 处理成 policy update 的状态 |
-| `discard_reason` | `text` | 否 |  |  | 当 `policy_update_status = discarded` 时记录过滤原因，用于 debug prompt 质量 |
 | `policy_update_attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | raw item 处理 durable 尝试次数 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
@@ -204,7 +204,7 @@ PRIMARY KEY (id)
 UNIQUE (source_key, source_item_key)
 CHECK (policy_update_status IN ('pending', 'ingested', 'discarded', 'failed'))
 CHECK (policy_update_attempt_count >= 0)
-CHECK (jsonb_typeof(raw_metadata) = 'object')
+CHECK (jsonb_typeof(source_metadata) = 'object')
 CHECK (jsonb_typeof(pdf_urls) = 'array')
 ```
 
@@ -226,15 +226,16 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 | `source_key` | `text` | 是 |  | 建议索引 | source 稳定标识快照 |
 | `source_label` | `text` | 是 |  |  | source 展示名称快照 |
 | `source_url` | `text` | 是 |  |  | 原文 URL 快照 |
-| `reference_number` | `text` | 否 |  |  | 源站自己的可读编号，如 docket/document/notice number |
-| `published_at` | `timestamptz` | 否 |  | 排序索引 | 源站发布时间 |
-| `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表快照 |
 | `source_metadata` | `jsonb` | 是 | `'{}'::jsonb` | check object | source 域只读补充快照，不作为 1.0 查询条件 |
+| `source_title` | `text` | 是 |  |  | 源站原始标题快照 |
+| `source_content` | `text` | 是 |  |  | 来自 raw item `source_content` 的清洗正文，不由 LLM 生成 |
+| `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表快照 |
+| `reference_number` | `text` | 否 |  |  | 源站自己的可读编号快照，可为空 |
+| `published_at` | `timestamptz` | 否 |  | 排序索引 | 源站发布时间 |
+| `effective_date` | `date` | 否 |  |  | 政策级生效日期，可为空 |
 | `headline` | `text` | 是 |  |  | policy update 标题 |
 | `summary` | `text` | 是 |  |  | 列表摘要 |
-| `briefing_markdown` | `text` | 是 |  |  | 详情页 briefing，Markdown 文本 |
-| `original_text` | `text` | 是 |  |  | 来自 raw item `raw_content` 的清洗正文，不由 LLM 生成 |
-| `effective_date` | `date` | 否 |  |  | 政策级生效日期，可为空 |
+| `briefing` | `text` | 是 |  |  | 详情页 briefing 文本 |
 | `policy_extract_status` | `text` | 是 | `'pending'` | check enum；建议索引 | policy impact 抽取状态 |
 | `policy_extract_attempt_count` | `integer` | 是 | `0` | check `>= 0` | policy impact 抽取 durable 尝试次数 |
 | `policy_review_status` | `text` | 是 | `'confirm_needed'` | check enum；建议索引 | 人工审核状态 |
@@ -580,8 +581,8 @@ ALTER TABLE radar_raw_source_items
   CHECK (policy_update_status IN ('pending', 'ingested', 'discarded', 'failed')),
   ADD CONSTRAINT chk_radar_raw_policy_update_attempt_count
   CHECK (policy_update_attempt_count >= 0),
-  ADD CONSTRAINT chk_radar_raw_metadata_object
-  CHECK (jsonb_typeof(raw_metadata) = 'object'),
+  ADD CONSTRAINT chk_radar_raw_source_metadata_object
+  CHECK (jsonb_typeof(source_metadata) = 'object'),
   ADD CONSTRAINT chk_radar_raw_pdf_urls_array
   CHECK (jsonb_typeof(pdf_urls) = 'array');
 
@@ -668,7 +669,7 @@ ALTER TABLE radar_webhook_events
 
 以下事项不改变当前数据库主结构，后续实现时按需处理：
 
-1. `raw_metadata/source_metadata` 暂不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
+1. `source_metadata` 暂不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
 2. recipient email 使用 `lower(email)` partial unique index，不引入 `citext` extension。
 3. `pdf_urls` 当前按 `jsonb` array 设计，元素先按 URL 字符串处理；如果实现时需要更多附件元信息，可扩展为 object array，不需要改字段类型。
 4. `product_uid`、`user_id`、`policy_update_id` 等关系字段不加硬外键，但 API 实现需要和 classification/sandbox 现有权限与数据一致性规则保持一致。
