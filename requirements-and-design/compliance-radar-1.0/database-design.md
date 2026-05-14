@@ -211,7 +211,7 @@ CHECK (jsonb_typeof(pdf_urls) = 'array')
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_raw_source_items_processing
+CREATE INDEX idx_radar_raw_source_items_policy_update_status_attempt_count
 ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, created_at);
 ```
 
@@ -261,16 +261,16 @@ CHECK (jsonb_typeof(source_metadata) = 'object')
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_policy_updates_list
+CREATE INDEX idx_radar_policy_updates_published_at_created_at
 ON radar_policy_updates (published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_source_list
+CREATE INDEX idx_radar_policy_updates_source_key_published_at_created_at
 ON radar_policy_updates (source_key, published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_extract_work
+CREATE INDEX idx_radar_policy_updates_policy_extract_status_attempt_count
 ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_action_work
+CREATE INDEX idx_radar_policy_updates_review_action_calculate_attempt_count
 ON radar_policy_updates (policy_review_status, action_calculate_status, action_calculate_attempt_count, created_at);
 ```
 
@@ -322,7 +322,7 @@ CHECK (jsonb_typeof(action_items) = 'array')
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_user_actions_user_status
+CREATE INDEX idx_radar_user_actions_user_id_status_created_at
 ON radar_user_actions (user_id, status, created_at DESC);
 ```
 
@@ -382,11 +382,11 @@ CHECK (status IN ('active', 'unsubscribed', 'deleted'))
 建议索引：
 
 ```sql
-CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
+CREATE UNIQUE INDEX uq_radar_notification_recipients_user_id_email
 ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
-CREATE INDEX idx_radar_notification_recipients_user_status
+CREATE INDEX idx_radar_notification_recipients_user_id_status
 ON radar_notification_recipients (user_id, status);
 ```
 
@@ -435,7 +435,7 @@ CHECK (attempt_count >= 0)
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_email_deliveries_send_work
+CREATE INDEX idx_radar_email_deliveries_status_attempt_count_created_at
 ON radar_email_deliveries (status, attempt_count, created_at);
 ```
 
@@ -493,7 +493,7 @@ CHECK (attempt_count >= 0)
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_webhook_events_dispatch_work
+CREATE INDEX idx_radar_webhook_events_status_attempt_count_created_at
 ON radar_webhook_events (status, attempt_count, created_at);
 ```
 
@@ -635,31 +635,31 @@ ALTER TABLE radar_webhook_events
 
 ```sql
 ALTER TABLE radar_raw_source_items
-  ADD CONSTRAINT uq_radar_raw_source_items_source_item
+  ADD CONSTRAINT uq_radar_raw_source_items_source_key_source_item_key
   UNIQUE (source_key, source_item_key);
 
 ALTER TABLE radar_policy_updates
-  ADD CONSTRAINT uq_radar_policy_updates_raw_source_item
+  ADD CONSTRAINT uq_radar_policy_updates_raw_source_item_id
   UNIQUE (raw_source_item_id);
 
 ALTER TABLE radar_user_actions
-  ADD CONSTRAINT uq_radar_user_actions_user_policy
+  ADD CONSTRAINT uq_radar_user_actions_user_id_policy_update_id
   UNIQUE (user_id, policy_update_id);
 
 ALTER TABLE radar_email_deliveries
-  ADD CONSTRAINT uq_radar_email_deliveries_action_recipient
+  ADD CONSTRAINT uq_radar_email_deliveries_user_action_id_recipient_id
   UNIQUE (user_action_id, recipient_id);
 
 ALTER TABLE radar_notification_recipients
   ADD CONSTRAINT uq_radar_notification_recipients_unsubscribe_token
   UNIQUE (unsubscribe_token);
 
-CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
+CREATE UNIQUE INDEX uq_radar_notification_recipients_user_id_email
 ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
 ALTER TABLE radar_webhook_events
-  ADD CONSTRAINT uq_radar_webhook_events_event_entity_channel
+  ADD CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id_channel
   UNIQUE (event_type, entity_type, entity_id, channel);
 ```
 

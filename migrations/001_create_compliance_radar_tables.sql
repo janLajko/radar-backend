@@ -25,7 +25,7 @@ CREATE TABLE radar_raw_source_items (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_raw_source_items_source_item
+  CONSTRAINT uq_radar_raw_source_items_source_key_source_item_key
     UNIQUE (source_key, source_item_key),
   CONSTRAINT chk_radar_raw_policy_update_status
     CHECK (policy_update_status IN ('pending', 'ingested', 'discarded', 'failed')),
@@ -66,7 +66,7 @@ CREATE TABLE radar_policy_updates (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_policy_updates_raw_source_item
+  CONSTRAINT uq_radar_policy_updates_raw_source_item_id
     UNIQUE (raw_source_item_id),
   CONSTRAINT chk_radar_policy_extract_status
     CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed')),
@@ -101,7 +101,7 @@ CREATE TABLE radar_user_actions (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_user_actions_user_policy
+  CONSTRAINT uq_radar_user_actions_user_id_policy_update_id
     UNIQUE (user_id, policy_update_id),
   CONSTRAINT chk_radar_user_actions_status
     CHECK (status IN ('action_needed', 'completed')),
@@ -147,7 +147,7 @@ CREATE TABLE radar_email_deliveries (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_email_deliveries_action_recipient
+  CONSTRAINT uq_radar_email_deliveries_user_action_id_recipient_id
     UNIQUE (user_action_id, recipient_id),
   CONSTRAINT chk_radar_email_deliveries_status
     CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
@@ -174,7 +174,7 @@ CREATE TABLE radar_webhook_events (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_webhook_events_event_entity_channel
+  CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id_channel
     UNIQUE (event_type, entity_type, entity_id, channel),
   CONSTRAINT chk_radar_webhook_events_event_type
     CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
@@ -193,35 +193,35 @@ BEFORE UPDATE ON radar_webhook_events
 FOR EACH ROW
 EXECUTE FUNCTION radar_set_updated_at();
 
-CREATE INDEX idx_radar_raw_source_items_processing
+CREATE INDEX idx_radar_raw_source_items_policy_update_status_attempt_count
 ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_list
+CREATE INDEX idx_radar_policy_updates_published_at_created_at
 ON radar_policy_updates (published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_source_list
+CREATE INDEX idx_radar_policy_updates_source_key_published_at_created_at
 ON radar_policy_updates (source_key, published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_extract_work
+CREATE INDEX idx_radar_policy_updates_policy_extract_status_attempt_count
 ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_action_work
+CREATE INDEX idx_radar_policy_updates_review_action_calculate_attempt_count
 ON radar_policy_updates (policy_review_status, action_calculate_status, action_calculate_attempt_count, created_at);
 
-CREATE INDEX idx_radar_user_actions_user_status
+CREATE INDEX idx_radar_user_actions_user_id_status_created_at
 ON radar_user_actions (user_id, status, created_at DESC);
 
-CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
+CREATE UNIQUE INDEX uq_radar_notification_recipients_user_id_email
 ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
-CREATE INDEX idx_radar_notification_recipients_user_status
+CREATE INDEX idx_radar_notification_recipients_user_id_status
 ON radar_notification_recipients (user_id, status);
 
-CREATE INDEX idx_radar_email_deliveries_send_work
+CREATE INDEX idx_radar_email_deliveries_status_attempt_count_created_at
 ON radar_email_deliveries (status, attempt_count, created_at);
 
-CREATE INDEX idx_radar_webhook_events_dispatch_work
+CREATE INDEX idx_radar_webhook_events_status_attempt_count_created_at
 ON radar_webhook_events (status, attempt_count, created_at);
 
 COMMIT;
