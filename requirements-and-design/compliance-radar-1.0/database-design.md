@@ -416,7 +416,6 @@ ON radar_notification_recipients (user_id, status);
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
 | `user_action_id` | `bigint` | 是 |  | unique 组合项 | 对应用户 action |
 | `recipient_id` | `bigint` | 是 |  | unique 组合项 | 对应 recipient |
-| `recipient_email` | `text` | 是 |  |  | 发送目标邮箱快照 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | 邮件发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
 | `last_attempt_at` | `timestamptz` | 否 |  |  | 最近一次外部邮件发送调用返回后的写回时间；`skipped` 不设置 |
@@ -437,8 +436,7 @@ CHECK (attempt_count >= 0)
 
 ```sql
 CREATE INDEX idx_radar_email_deliveries_send_work
-ON radar_email_deliveries (created_at)
-WHERE status IN ('pending', 'failed') AND attempt_count < 3;
+ON radar_email_deliveries (status, attempt_count, created_at);
 ```
 
 发送查询：
@@ -469,7 +467,7 @@ LIMIT 1
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
 | `event_type` | `text` | 是 |  | unique 组合项；check enum | 事件类型 |
-| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `raw_policy_update` / `policy_impact` / `policy_extract` / `action_calculate` / `email_delivery` |
+| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `policy_update` / `policy_impact` / `policy_extract` / `action_calculate` / `email_delivery` |
 | `entity_id` | `bigint` | 是 |  | unique 组合项 | 关联实体 ID |
 | `channel` | `text` | 是 | `'lark_team'` | unique 组合项 | 通知渠道 |
 | `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照；内部结构由发送器契约定义 |
@@ -486,7 +484,7 @@ LIMIT 1
 PRIMARY KEY (id)
 UNIQUE (event_type, entity_type, entity_id, channel)
 CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted'))
-CHECK (entity_type IN ('raw_policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery'))
+CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery'))
 CHECK (jsonb_typeof(payload) = 'object')
 CHECK (status IN ('pending', 'sent', 'failed'))
 CHECK (attempt_count >= 0)
@@ -508,7 +506,7 @@ ON radar_webhook_events (status, attempt_count, created_at);
 - 发送失败后用短事务设置 `status = failed`、`last_attempt_at`，并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
 - Stage 6 发送后只用普通 `UPDATE` 推进 `status/attempt_count/last_attempt_at/sent_at`。
 
-`entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_impact` / `policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
+`entity_id` 指向对应处理单元的主记录：`policy_update` 使用 `radar_raw_source_items.id`，`policy_impact` / `policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 
 ## 6. 关键事务边界
 
@@ -624,7 +622,7 @@ ALTER TABLE radar_webhook_events
   ADD CONSTRAINT chk_radar_webhook_events_event_type
   CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   ADD CONSTRAINT chk_radar_webhook_events_entity_type
-  CHECK (entity_type IN ('raw_policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
+  CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
   ADD CONSTRAINT chk_radar_webhook_events_status
   CHECK (status IN ('pending', 'sent', 'failed')),
   ADD CONSTRAINT chk_radar_webhook_events_payload_object

@@ -56,7 +56,7 @@ class WebhookEventType(StrEnum):
 
 
 class WebhookEntityType(StrEnum):
-    RAW_POLICY_UPDATE = "raw_policy_update"
+    POLICY_UPDATE = "policy_update"
     POLICY_IMPACT = "policy_impact"
     POLICY_EXTRACT = "policy_extract"
     ACTION_CALCULATE = "action_calculate"

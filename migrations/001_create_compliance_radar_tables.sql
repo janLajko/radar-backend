@@ -140,7 +140,6 @@ CREATE TABLE radar_email_deliveries (
   id bigserial PRIMARY KEY,
   user_action_id bigint NOT NULL,
   recipient_id bigint NOT NULL,
-  recipient_email text NOT NULL,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
   last_attempt_at timestamptz,
@@ -180,7 +179,7 @@ CREATE TABLE radar_webhook_events (
   CONSTRAINT chk_radar_webhook_events_event_type
     CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   CONSTRAINT chk_radar_webhook_events_entity_type
-    CHECK (entity_type IN ('raw_policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
+    CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
   CONSTRAINT chk_radar_webhook_events_status
     CHECK (status IN ('pending', 'sent', 'failed')),
   CONSTRAINT chk_radar_webhook_events_payload_object
@@ -220,8 +219,7 @@ CREATE INDEX idx_radar_notification_recipients_user_status
 ON radar_notification_recipients (user_id, status);
 
 CREATE INDEX idx_radar_email_deliveries_send_work
-ON radar_email_deliveries (created_at)
-WHERE status IN ('pending', 'failed') AND attempt_count < 3;
+ON radar_email_deliveries (status, attempt_count, created_at);
 
 CREATE INDEX idx_radar_webhook_events_dispatch_work
 ON radar_webhook_events (status, attempt_count, created_at);
