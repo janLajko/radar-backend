@@ -142,13 +142,15 @@ CREATE TABLE radar_email_deliveries (
   recipient_email text NOT NULL,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
+  last_attempt_at timestamptz,
+  sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
   CONSTRAINT uq_radar_email_deliveries_action_recipient
     UNIQUE (user_action_id, recipient_id),
   CONSTRAINT chk_radar_email_deliveries_status
-    CHECK (status IN ('pending', 'sent', 'failed')),
+    CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
   CONSTRAINT chk_radar_email_deliveries_attempt_count
     CHECK (attempt_count >= 0)
 );
@@ -167,6 +169,8 @@ CREATE TABLE radar_webhook_events (
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
+  last_attempt_at timestamptz,
+  sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 

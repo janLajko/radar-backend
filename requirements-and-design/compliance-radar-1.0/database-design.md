@@ -139,6 +139,7 @@ radar_webhook_events N -> operational entities
 | `pending` | 待发送 | 是，若 `attempt_count < 3` |
 | `sent` | 已发送成功 | 否 |
 | `failed` | 发送失败 | 是，若 `attempt_count < 3` |
+| `skipped` | 发送前发现 recipient 已不再 active，因此跳过发送 | 否 |
 
 ### 4.9 `radar_webhook_events.event_type`
 
@@ -407,7 +408,7 @@ ON radar_notification_recipients (user_id, status);
 
 保存每封 Impact Action 邮件的发送记录。发送由单实例 worker 串行处理，不使用数据库抢锁。
 
-创建 delivery 时只针对当时 `active` 的 recipients。`unsubscribed/deleted` recipients 不进入 delivery 表；如果 delivery 创建后 recipient 状态变化，发送前再次检查并删除未发送 delivery。
+创建 delivery 时只针对当时 `active` 的 recipients。`unsubscribed/deleted` recipients 不进入 delivery 表；如果 delivery 创建后 recipient 状态变化，发送前再次检查并把未发送 delivery 标记为 `skipped`。
 
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
@@ -417,6 +418,8 @@ ON radar_notification_recipients (user_id, status);
 | `recipient_email` | `text` | 是 |  |  | 发送目标邮箱快照 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | 邮件发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
+| `last_attempt_at` | `timestamptz` | 否 |  |  | 最近一次外部邮件发送调用返回后的写回时间；`skipped` 不设置 |
+| `sent_at` | `timestamptz` | 否 |  |  | Email Provider accepted 后的写回时间；仅 `sent` 设置 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -425,7 +428,7 @@ ON radar_notification_recipients (user_id, status);
 ```sql
 PRIMARY KEY (id)
 UNIQUE (user_action_id, recipient_id)
-CHECK (status IN ('pending', 'sent', 'failed'))
+CHECK (status IN ('pending', 'sent', 'failed', 'skipped'))
 CHECK (attempt_count >= 0)
 ```
 
@@ -451,10 +454,10 @@ LIMIT 1
 说明：
 
 - 不存 `last_error`。
-- 无 `skipped` 状态。
 - 发送前重新检查 recipient 是否 active。
-- 如果 recipient 已 unsubscribed/deleted，未发送 delivery 可删除。
-- Email Provider 调用通过 `EmailService` 在事务外发生；发送结果和 `attempt_count` 递增放在同一个短事务中写回。
+- 如果 recipient 已 unsubscribed/deleted，未发送 delivery 标记为 `skipped`，不递增 `attempt_count`，不设置 `last_attempt_at/sent_at`。
+- Email Provider 调用通过 `EmailService` 在事务外发生；发送结果、`attempt_count` 递增和 `last_attempt_at` 放在同一个短事务中写回。
+- 发送成功时设置 `status = sent` 和 `sent_at`；发送失败时设置 `status = failed`，不设置 `sent_at`。
 - SMTP accepted 但进程在写回 `sent` 前崩溃，可能导致后续重复发送；1.0 接受该 best-effort 语义。
 
 ### 5.6 `radar_webhook_events`
@@ -471,6 +474,8 @@ LIMIT 1
 | `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照；内部结构由发送器契约定义 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | webhook 发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
+| `last_attempt_at` | `timestamptz` | 否 |  |  | 最近一次外部 webhook 调用返回后的写回时间 |
+| `sent_at` | `timestamptz` | 否 |  |  | Lark accepted 后的写回时间；仅 `sent` 设置 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -495,12 +500,12 @@ ON radar_webhook_events (status, attempt_count, created_at);
 
 发送规则：
 
-- 业务 stage 只用 insert-if-absent 创建事件；同一事件已存在时不更新 `payload/status/attempt_count`。
+- 业务 stage 只用 insert-if-absent 创建事件；同一事件已存在时不更新任何字段。
 - 扫描 `status IN ('pending', 'failed') AND attempt_count < 3`。
 - Lark webhook 调用通过 `WebhookService` 在事务外发生，内部 RPC retry 最多 3 次。
-- 发送成功后用短事务设置 `status = sent` 并递增 `attempt_count`。
-- 发送失败后用短事务设置 `status = failed` 并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
-- Stage 6 发送后只用普通 `UPDATE` 推进 `status` 和 `attempt_count`。
+- 发送成功后用短事务设置 `status = sent`、`sent_at`、`last_attempt_at`，并递增 `attempt_count`。
+- 发送失败后用短事务设置 `status = failed`、`last_attempt_at`，并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
+- Stage 6 发送后只用普通 `UPDATE` 推进 `status/attempt_count/last_attempt_at/sent_at`。
 
 `entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_impact` / `policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
 
@@ -550,10 +555,10 @@ update radar_user_actions completed_at/completed_by if needed
 select one eligible delivery
 short transaction: check recipient active
 send email outside transaction via EmailService
-short transaction: update delivery status and increment attempt_count
+short transaction: write skipped or send result fields
 ```
 
-如果 recipient 已不是 active，短事务删除未发送 delivery。发送前检查是 best-effort；检查后立即 unsubscribe 的极小竞态本期接受。Email Provider 调用必须设置严格 timeout。
+如果 recipient 已不是 active，短事务标记未发送 delivery 为 `skipped`。发送前检查是 best-effort；检查后立即 unsubscribe 的极小竞态本期接受。Email Provider 调用必须设置严格 timeout。
 
 ### 6.5 Operational Webhook 发送
 
@@ -562,7 +567,7 @@ Lark webhook 发送不使用长事务：
 ```text
 select one eligible webhook event
 send Lark webhook outside transaction via WebhookService
-short transaction: update webhook event status and increment attempt_count
+short transaction: update webhook event status, attempt_count, last_attempt_at, sent_at
 ```
 
 ## 7. 约束汇总
@@ -610,7 +615,7 @@ ALTER TABLE radar_notification_recipients
 
 ALTER TABLE radar_email_deliveries
   ADD CONSTRAINT chk_radar_email_deliveries_status
-  CHECK (status IN ('pending', 'sent', 'failed')),
+  CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
   ADD CONSTRAINT chk_radar_email_deliveries_attempt_count
   CHECK (attempt_count >= 0);
 

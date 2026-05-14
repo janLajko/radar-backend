@@ -47,6 +47,7 @@ class EmailDeliveryStatus(StrEnum):
     PENDING = "pending"
     SENT = "sent"
     FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 class WebhookEventType(StrEnum):

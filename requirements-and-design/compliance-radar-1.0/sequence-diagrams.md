@@ -292,7 +292,7 @@ loop select and send one delivery at a time
     RadarWorker->SharedDB: load recipient
 
     alt recipient is not active
-      RadarWorker->SharedDB: delete unsent delivery
+      RadarWorker->SharedDB: set status = skipped
       RadarWorker->SharedDB: commit
     else recipient is active
       RadarWorker->SharedDB: commit
@@ -307,13 +307,13 @@ loop select and send one delivery at a time
         EmailProvider-->EmailService: accepted
         EmailService-->RadarWorker: accepted
         RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = sent\nincrement attempt_count
+        RadarWorker->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
         RadarWorker->SharedDB: commit
       else provider failed or timed out
         EmailProvider-->EmailService: failure
         EmailService-->RadarWorker: failure
         RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = failed\nincrement attempt_count
+        RadarWorker->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
         opt new attempt_count reached 3
           RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for delivery_id
         end
@@ -328,7 +328,7 @@ note right of RadarWorker: If provider accepted but process crashes before marki
 
 ## 7. Stage 6: Dispatch operational webhooks
 
-这张图描述 Lark operational webhook 的发送。Webhook 发送由 outbox 状态驱动，Lark 调用不在数据库事务内。
+这张图描述 Lark operational webhook 的发送。Webhook event 是历史运营事件，不是当前业务状态投影；Stage 6 只发送 outbox，不重新检查业务主表、不删除 event、不补齐或同步 event。Lark 调用不在数据库事务内。
 
 ```text
 title 7. Stage 6 - Dispatch Operational Webhooks
@@ -359,13 +359,13 @@ loop select and send one webhook event at a time
       LarkTeam-->WebhookService: accepted
       WebhookService-->RadarWorker: accepted
       RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = sent\nincrement attempt_count
+      RadarWorker->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
       RadarWorker->SharedDB: commit
     else webhook failed or timed out
       LarkTeam-->WebhookService: failure
       WebhookService-->RadarWorker: failure
       RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = failed\nincrement attempt_count
+      RadarWorker->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
       RadarWorker->SharedDB: commit
     end
   end
@@ -534,7 +534,7 @@ else token found
   ClassificationBackend-->Frontend: success or already handled
 end
 
-note right of RadarWorker: Existing sent deliveries remain historical records\nFuture deliveries only use active recipients\nUnsubscribed/deleted pending deliveries are not sent
+note right of RadarWorker: Existing sent deliveries remain historical records\nFuture deliveries only use active recipients\nUnsubscribed/deleted pending deliveries are marked skipped by Stage 5
 ```
 
 ## 11. Action execution boundary

@@ -509,10 +509,10 @@ Action item completion 可逆：
 ### 10.4 Email Delivery
 
 ```text
-pending / sent / failed
+pending / sent / failed / skipped
 ```
 
-无 `skipped`，无 `bounced`。
+`skipped` 表示发送前发现 recipient 已不是 active，因此系统主动跳过发送。`skipped` 不属于发送失败，不递增 `attempt_count`。无 `bounced`。
 
 ### 10.5 Webhook Event
 
@@ -574,6 +574,11 @@ webhook:
 
 `attempt_count` 表示已经完成的 durable attempts。它不在重型操作前递增，而是在外部调用、LLM、黑盒计算、邮件发送或 webhook 发送返回后，和状态写回放在同一个短事务中递增。
 
+`radar_email_deliveries` 和 `radar_webhook_events` 同时记录外部发送时间：
+
+- `last_attempt_at`：最近一次外部发送调用返回后的写回时间，成功失败都设置。
+- `sent_at`：外部系统 accepted 后的写回时间，仅 `status = sent` 时设置。
+
 一旦某条记录进入重型操作，stage 实现应使用 `finally` 或等价的统一收口逻辑写回本次 durable attempt：递增对应 `attempt_count`、更新成功/失败状态，并在失败且达到上限时尝试创建 `attempt_exhausted` webhook event。
 
 如果进程在重型操作中途崩溃，本次 attempt 不计数，后续周期会重新尝试。黑盒函数必须通过幂等契约承受重试；email/webhook 这类外部副作用接受 best-effort 语义。
@@ -597,13 +602,14 @@ Webhook event 写入规则：
 - event 默认 `status = pending`。
 - 业务 stage 直接通过 repository 写入 `radar_webhook_events`。
 - 唯一键保证同一事件按实体幂等。
-- 业务 stage 只尝试创建 webhook event；同一事件已存在时不更新。
+- 业务 stage 只尝试创建 webhook event；同一事件已存在时不更新任何字段。
+- Webhook event 是历史运营事件，不是当前业务状态投影；Stage 6 不重新检查业务主表、不删除 event、不补齐或同步 event。
 
 Stage 6 `dispatch_operational_webhooks()` 按状态发送 Lark Team webhook：
 
 1. 选择一条 `status in ('pending', 'failed') and attempt_count < 3` 的 webhook event。
 2. 在事务外通过 `WebhookService` 调用 Lark webhook，内部 RPC retry 最多 3 次。
-3. 用普通 `UPDATE` 在短事务中写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
+3. 用普通 `UPDATE` 在短事务中按发送结果维护 `status/attempt_count/last_attempt_at/sent_at`。
 
 attempt count 是纯后端控制信号，不暴露给普通用户 API，也不暴露给 review API/UI。
 
@@ -693,7 +699,7 @@ Go 跳转：
 如果 recipient 后续 `deleted/unsubscribed`：
 
 - 未来不再创建 delivery。
-- 已存在但未发送的 delivery 在发送前重新检查 recipient 状态；如果不 active，则删除未发送 delivery。
+- 已存在但未发送的 delivery 在发送前重新检查 recipient 状态；如果不 active，则标记为 `skipped`。
 - 已 sent delivery 保留为历史记录。
 
 邮件发送使用单条 delivery 粒度，并且外部邮件调用不在数据库事务内：
@@ -710,9 +716,9 @@ LIMIT 1
 发送流程：
 
 1. 选择一条 eligible delivery。
-2. 如果 recipient 已不是 active，短事务删除未发送 delivery。
+2. 如果 recipient 已不是 active，短事务设置 `status = skipped`，不递增 `attempt_count`，不设置 `last_attempt_at/sent_at`。
 3. 如果 recipient active，事务外通过 `EmailService` 调用 Email Provider，内部 RPC retry 最多 3 次。
-4. 短事务写 `status = sent` 或 `status = failed`，并递增 `attempt_count`。
+4. 短事务写 `status = sent` 或 `status = failed`，递增 `attempt_count`，并写 `last_attempt_at`；成功时同时写 `sent_at`。
 5. 发送前会检查 recipient active，但检查后立即 unsubscribe 的极小竞态本期接受。
 6. 如果失败后 `attempt_count` 已达到 3，尝试创建 `attempt_exhausted` webhook event。
 
@@ -842,8 +848,8 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - 创建 policy update：`insert radar_policy_updates` 与 `update raw item status = ingested` 同事务。
 - 写 user actions：`insert radar_user_actions`、`insert radar_email_deliveries`、`update action_calculate_status = succeeded` 同事务。
 - action completion：验证用户归属、更新 `action_items` JSON、重算顶层 status 同事务。
-- email send：事务外通过 `EmailService` 发送邮件，再用短事务写发送结果并递增 delivery attempt。
-- webhook dispatch：事务外发送 Lark，再用短事务写发送结果并递增 webhook event attempt。
+- email send：事务外通过 `EmailService` 发送邮件，再用短事务写发送结果、递增 delivery attempt，并维护 `last_attempt_at/sent_at`。
+- webhook dispatch：事务外发送 Lark，再用短事务写发送结果、递增 webhook event attempt，并维护 `last_attempt_at/sent_at`。
 
 并发策略：
 
