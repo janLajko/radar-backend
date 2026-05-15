@@ -9,6 +9,10 @@ from radar_backend.config import Settings, load_dotenv
 
 def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://example/test")
+    monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o")
     monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("DB_POOL_MIN_SIZE", "1")
     monkeypatch.setenv("DB_POOL_MAX_SIZE", "3")
@@ -18,6 +22,10 @@ def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None
     settings = Settings.from_env()
 
     assert settings.database_dsn_radar == "postgresql://example/test"
+    assert settings.source_config_path == "/etc/radar/sources.yaml"
+    assert settings.llm_api_key == "sk-test"
+    assert settings.llm_provider == "openai"
+    assert settings.llm_model == "gpt-4o"
     assert settings.worker_poll_interval_seconds == 60
     assert settings.db_pool_min_size == 1
     assert settings.db_pool_max_size == 3
@@ -33,7 +41,12 @@ def test_settings_requires_database_dsn_radar(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_settings_rejects_invalid_log_level() -> None:
-    settings = Settings(database_dsn_radar="postgresql://example/test", log_level="LOUD")
+    settings = Settings(
+        database_dsn_radar="postgresql://example/test",
+        source_config_path="/etc/radar/sources.yaml",
+        llm_api_key="sk-test",
+        log_level="LOUD",
+    )
 
     with pytest.raises(ValueError, match="LOG_LEVEL"):
         settings.validate()
@@ -46,6 +59,8 @@ def test_load_dotenv_does_not_override_existing_env(
     env_file = tmp_path / ".env"
     env_file.write_text("DATABASE_DSN_RADAR=postgresql://from-file/db\nLOG_LEVEL=DEBUG\n")
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://from-env/db")
+    monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
     monkeypatch.delenv("LOG_LEVEL", raising=False)
 
     load_dotenv(env_file)
@@ -56,6 +71,8 @@ def test_load_dotenv_does_not_override_existing_env(
 
 def test_settings_uses_production_pool_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://example/test")
+    monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
     monkeypatch.delenv("DB_POOL_MIN_SIZE", raising=False)
     monkeypatch.delenv("DB_POOL_MAX_SIZE", raising=False)
     monkeypatch.delenv("DB_POOL_TIMEOUT_SECONDS", raising=False)

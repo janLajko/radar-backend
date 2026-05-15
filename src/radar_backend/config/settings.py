@@ -24,6 +24,10 @@ def load_dotenv(path: Path) -> None:
 @dataclass(frozen=True)
 class Settings:
     database_dsn_radar: str
+    source_config_path: str
+    llm_api_key: str
+    llm_provider: str = "openai"
+    llm_model: str = "gpt-4o"
     worker_poll_interval_seconds: int = 300
     db_pool_min_size: int = 10
     db_pool_max_size: int = 50
@@ -33,8 +37,14 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         database_dsn_radar = _required("DATABASE_DSN_RADAR")
+        source_config_path = _required("SOURCE_CONFIG_PATH")
+        llm_api_key = _required("LLM_API_KEY")
         return cls(
             database_dsn_radar=database_dsn_radar,
+            source_config_path=source_config_path,
+            llm_api_key=llm_api_key,
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_model=os.getenv("LLM_MODEL", "gpt-4o"),
             worker_poll_interval_seconds=_int("WORKER_POLL_INTERVAL_SECONDS", 300),
             db_pool_min_size=_int("DB_POOL_MIN_SIZE", 10),
             db_pool_max_size=_int("DB_POOL_MAX_SIZE", 50),
