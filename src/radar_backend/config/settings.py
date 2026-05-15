@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -21,26 +20,26 @@ def load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
-@dataclass(frozen=True)
-class Settings:
-    database_dsn_radar: str
-    worker_poll_interval_seconds: int = 300
-    log_level: str = "INFO"
+def database_dsn_radar() -> str:
+    return _required("DATABASE_DSN_RADAR")
 
-    @classmethod
-    def from_env(cls) -> "Settings":
-        database_dsn_radar = _required("DATABASE_DSN_RADAR")
-        return cls(
-            database_dsn_radar=database_dsn_radar,
-            worker_poll_interval_seconds=_int("WORKER_POLL_INTERVAL_SECONDS", 300),
-            log_level=os.getenv("LOG_LEVEL", "INFO"),
-        )
 
-    def validate(self) -> None:
-        if self.worker_poll_interval_seconds <= 0:
-            raise ValueError("WORKER_POLL_INTERVAL_SECONDS must be positive")
-        if self.log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
-            raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
+def worker_poll_interval_seconds() -> int:
+    value = _int("WORKER_POLL_INTERVAL_SECONDS", 300)
+    if value <= 0:
+        raise ValueError("WORKER_POLL_INTERVAL_SECONDS must be positive")
+    return value
+
+
+def log_level() -> str:
+    value = os.getenv("LOG_LEVEL", "INFO")
+    if value.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
+    return value
+
+
+def lark_webhook_url() -> str:
+    return os.getenv("LARK_WEBHOOK_URL", "").strip()
 
 
 def _required(name: str) -> str:

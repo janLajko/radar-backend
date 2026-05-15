@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
-from radar_backend.config import Settings
+from radar_backend import config
 
 
 DB_POOL_NAME = "radar-backend"
@@ -21,13 +21,13 @@ DB_POOL_MAX_WAITING = 10
 _pool: ConnectionPool[Connection] | None = None
 
 
-def open_pool(settings: Settings) -> None:
+def open_pool() -> None:
     global _pool
 
     if _pool is not None:
         return
 
-    pool = _create_pool(settings)
+    pool = _create_pool()
 
     try:
         pool.open(wait=True)
@@ -60,9 +60,9 @@ def acquire_connection_with_transaction() -> Iterator[Connection]:
             yield conn
 
 
-def _create_pool(settings: Settings) -> ConnectionPool[Connection]:
+def _create_pool() -> ConnectionPool[Connection]:
     return ConnectionPool(
-        conninfo=settings.database_dsn_radar,
+        conninfo=config.database_dsn_radar(),
         kwargs={
             "application_name": DB_POOL_APPLICATION_NAME,
             "connect_timeout": DB_POOL_CONNECT_TIMEOUT_SECONDS,

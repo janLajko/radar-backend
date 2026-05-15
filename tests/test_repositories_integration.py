@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from psycopg import Connection
 
-from radar_backend.config import Settings, load_dotenv
+from radar_backend import config
 from radar_backend.db.connection import acquire_connection, close_pool, open_pool
 from radar_backend.db.repositories import (
     email_deliveries_repository,
@@ -33,9 +33,8 @@ from radar_backend.domain import (
 
 @pytest.fixture
 def conn() -> Iterator[Connection]:
-    load_dotenv(Path(".env"))
-    settings = Settings.from_env()
-    open_pool(settings)
+    config.load_dotenv(Path(".env"))
+    open_pool()
 
     try:
         with acquire_connection() as connection:

@@ -8,8 +8,7 @@ from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
-from radar_backend import db
-from radar_backend.config import Settings, load_dotenv
+from radar_backend import config, db
 from radar_backend.logging_config import configure_logging
 from radar_backend.worker.context import WorkerContext
 from radar_backend.worker.cycle import PeriodicCycle, build_cycle
@@ -19,21 +18,19 @@ logger = logging.getLogger(__name__)
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    load_dotenv(Path(".env"))
+    config.load_dotenv(Path(".env"))
 
-    settings = Settings.from_env()
-    settings.validate()
-    configure_logging(settings.log_level)
+    configure_logging(config.log_level())
 
     try:
-        db.open_pool(settings)
+        db.open_pool()
         cycle = build_cycle()
 
         if args.once:
             cycle.run_once(_new_context())
             return 0
 
-        _run_loop(cycle, settings.worker_poll_interval_seconds)
+        _run_loop(cycle, config.worker_poll_interval_seconds())
         return 0
     finally:
         db.close_pool()

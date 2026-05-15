@@ -4,43 +4,42 @@ from pathlib import Path
 
 import pytest
 
-from radar_backend.config import Settings, load_dotenv
+from radar_backend import config
 
 
-def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_functions_load_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://example/test")
     monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("LARK_WEBHOOK_URL", " https://example.test/lark ")
 
-    settings = Settings.from_env()
+    assert config.database_dsn_radar() == "postgresql://example/test"
+    assert config.worker_poll_interval_seconds() == 60
+    assert config.log_level() == "DEBUG"
+    assert config.lark_webhook_url() == "https://example.test/lark"
 
-    assert settings.database_dsn_radar == "postgresql://example/test"
-    assert settings.worker_poll_interval_seconds == 60
-    assert settings.log_level == "DEBUG"
 
-
-def test_settings_requires_database_dsn_radar(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_database_dsn_radar_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_DSN_RADAR", raising=False)
 
     with pytest.raises(ValueError, match="DATABASE_DSN_RADAR is required"):
-        Settings.from_env()
+        config.database_dsn_radar()
 
 
-def test_settings_rejects_invalid_log_level() -> None:
-    settings = Settings(database_dsn_radar="postgresql://example/test", log_level="LOUD")
+def test_log_level_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOG_LEVEL", "LOUD")
 
     with pytest.raises(ValueError, match="LOG_LEVEL"):
-        settings.validate()
+        config.log_level()
 
 
-def test_settings_rejects_non_positive_poll_interval() -> None:
-    settings = Settings(
-        database_dsn_radar="postgresql://example/test",
-        worker_poll_interval_seconds=0,
-    )
+def test_worker_poll_interval_rejects_non_positive_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "0")
 
     with pytest.raises(ValueError, match="WORKER_POLL_INTERVAL_SECONDS"):
-        settings.validate()
+        config.worker_poll_interval_seconds()
 
 
 def test_load_dotenv_does_not_override_existing_env(
@@ -52,8 +51,7 @@ def test_load_dotenv_does_not_override_existing_env(
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://from-env/db")
     monkeypatch.delenv("LOG_LEVEL", raising=False)
 
-    load_dotenv(env_file)
-    settings = Settings.from_env()
+    config.load_dotenv(env_file)
 
-    assert settings.database_dsn_radar == "postgresql://from-env/db"
-    assert settings.log_level == "DEBUG"
+    assert config.database_dsn_radar() == "postgresql://from-env/db"
+    assert config.log_level() == "DEBUG"
