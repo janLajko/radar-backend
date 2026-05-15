@@ -36,7 +36,7 @@ note right of RadarWorker: Only approved policy impacts move forward\nActions ar
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
 note right of RadarWorker: New user actions create email deliveries\nEmail sending happens after actions are committed
 
-RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
+RadarWorker->RadarWorker: Stage 6. Send operational webhooks
 note right of RadarWorker: Review-ready and attempt-exhausted events are sent to Lark\nWebhook sending is driven by status and attempt_count
 
 note right of RadarWorker: Cycle summary:\n- Every cycle is state-driven\n- Each stage picks up newly eligible records\nand unfinished or failed records within retry limits
@@ -325,12 +325,12 @@ end
 note right of RadarWorker: If provider accepted but process crashes before marking sent,\na later retry may send a duplicate.
 ```
 
-## 7. Stage 6: Dispatch operational webhooks
+## 7. Stage 6: Send operational webhooks
 
 这张图描述 Lark operational webhook 的发送。Webhook event 是历史运营事件，不是实时业务状态投影；Stage 6 只按 outbox 状态发送事件。Lark 调用不在数据库事务内。
 
 ```text
-title 7. Stage 6 - Dispatch Operational Webhooks
+title 7. Stage 6 - Send Operational Webhooks
 
 participant Scheduler
 participant RadarWorker
@@ -339,8 +339,8 @@ participant WebhookService
 participant LarkTeam
 
 Scheduler->RadarWorker: run_periodic_cycle()
-RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
-note right of RadarWorker: dispatch_operational_webhooks() loads a batch of events\nEach event is handled serially with durable retry
+RadarWorker->RadarWorker: Stage 6. Send operational webhooks
+note right of RadarWorker: send_operational_webhooks() loads a batch of events\nEach event is handled serially with durable retry
 
 RadarWorker->SharedDB: select webhook events\nstatus in pending/failed\nattempt_count < 3\nlimit N
 

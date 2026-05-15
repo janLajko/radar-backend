@@ -3,16 +3,16 @@ from radar_backend.worker.stages.collect_source_items import CollectSourceItemsS
 from radar_backend.worker.stages.create_policy_impacts import CreatePolicyImpactsStage
 from radar_backend.worker.stages.create_policy_updates import CreatePolicyUpdatesStage
 from radar_backend.worker.stages.create_user_actions import CreateUserActionsStage
-from radar_backend.worker.stages.dispatch_operational_webhooks import DispatchOperationalWebhooksStage
 from radar_backend.worker.stages.send_action_notifications import SendActionNotificationsStage
+from radar_backend.worker.stages.send_operational_webhooks import SendOperationalWebhooksStage
 
 __all__ = [
     "CollectSourceItemsStage",
     "CreatePolicyImpactsStage",
     "CreatePolicyUpdatesStage",
     "CreateUserActionsStage",
-    "DispatchOperationalWebhooksStage",
     "SendActionNotificationsStage",
+    "SendOperationalWebhooksStage",
     "StageResult",
     "WorkerStage",
 ]

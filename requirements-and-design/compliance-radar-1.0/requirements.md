@@ -191,7 +191,7 @@ run_periodic_cycle():
   3. create_policy_impacts()
   4. create_user_actions()
   5. send_action_notifications()
-  6. dispatch_operational_webhooks()
+  6. send_operational_webhooks()
 ```
 
 编排约束：
@@ -608,7 +608,7 @@ Webhook event 写入规则：
 - 业务 stage 只尝试创建 webhook event；同一事件已存在时不更新任何字段。
 - Webhook event 是历史运营事件，不是实时业务状态投影；Stage 6 只按 outbox 状态发送事件。
 
-Stage 6 `dispatch_operational_webhooks()` 按状态发送 Lark Team webhook：
+Stage 6 `send_operational_webhooks()` 按状态发送 Lark Team webhook：
 
 1. 选择一批 `status in ('pending', 'failed') and attempt_count < 3` 的 webhook events。
 2. 在事务外通过 `WebhookService` 调用 Lark webhook，内部 RPC retry 最多 3 次。
@@ -852,7 +852,7 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - 写 user actions：`insert radar_user_actions`、`insert radar_email_deliveries`、`update action_calculate_status = succeeded` 同事务。
 - action completion：验证用户归属、更新 `action_items` JSON、重算顶层 status 同事务。
 - email send：事务外通过 `EmailService` 发送邮件，再用短事务写发送结果、递增 delivery attempt，并维护 `last_attempt_at/sent_at`。
-- webhook dispatch：事务外发送 Lark，再用短事务写发送结果、递增 webhook event attempt，并维护 `last_attempt_at/sent_at`。
+- webhook sending：事务外发送 Lark，再用短事务写发送结果、递增 webhook event attempt，并维护 `last_attempt_at/sent_at`。
 
 并发策略：
 

@@ -8,8 +8,8 @@ from radar_backend.worker.stages.base import StageResult
 logger = logging.getLogger(__name__)
 
 
-class DispatchOperationalWebhooksStage:
-    name = "dispatch_operational_webhooks"
+class SendOperationalWebhooksStage:
+    name = "send_operational_webhooks"
 
     def run(self, context: WorkerContext) -> StageResult:
         logger.info(

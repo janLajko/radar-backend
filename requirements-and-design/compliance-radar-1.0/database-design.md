@@ -167,7 +167,7 @@ radar_webhook_events N -> operational entities
 | Create policy impacts | `radar_policy_updates.policy_extract_status IN ('pending', 'failed') AND policy_extract_attempt_count < 3` | `radar_policy_updates.policy_extract_attempt_count` |
 | Create user actions | `radar_policy_updates.policy_review_status = 'approved' AND action_calculate_status IN ('pending', 'failed') AND action_calculate_attempt_count < 3` | `radar_policy_updates.action_calculate_attempt_count` |
 | Send action notification emails | `radar_email_deliveries.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_email_deliveries.attempt_count` |
-| Dispatch operational webhooks | `radar_webhook_events.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_webhook_events.attempt_count` |
+| Send operational webhooks | `radar_webhook_events.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_webhook_events.attempt_count` |
 
 `attempt_count` 表示已经完成的 durable attempts。计数不在重型操作前递增，而是在操作返回后，和状态写回放在同一个短事务中递增。如果进程在操作中途崩溃，本次 attempt 不计数，后续仍按各 stage 的幂等或重复发送语义处理。
 
