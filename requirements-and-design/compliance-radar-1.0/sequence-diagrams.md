@@ -6,7 +6,7 @@
 
 ## 1. 周期任务总览
 
-这张图表达 Radar 主流程的外层编排，以及 policy impact 人工审核这个必经 gate。它只说明每一步的目的；各 stage 的实现细节在后续图中展开。
+这张图表达 Radar 主流程的外层编排，以及 policy impact 人工审核这个必经 gate。它只说明每一步的目的；各 stage 的细节见下列图。
 
 ```text
 title 1. Periodic Cycle Overview
@@ -82,7 +82,7 @@ loop each enabled source
       SharedDB-->RadarWorker: inserted
     else row already exists
       SharedDB-->RadarWorker: skipped
-      note right of SharedDB: Existing raw item is not updated\nNo upsert in 1.0
+      note right of SharedDB: Existing raw item is skipped\nand not updated
     end
   end
 end
@@ -121,7 +121,7 @@ loop each selected raw item
       RadarWorker->SharedDB: begin short transaction
       RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
       opt new policy_update_attempt_count reached 3
-        RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id
+        RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id\nentity_type = policy_update
       end
       RadarWorker->SharedDB: commit
       RadarWorker->RadarWorker: stop processing this raw item
@@ -140,7 +140,7 @@ loop each selected raw item
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
     opt new policy_update_attempt_count reached 3
-      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id\nentity_type = policy_update
     end
     RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this raw item
@@ -254,7 +254,7 @@ loop each selected policy update
     RadarWorker->SharedDB: begin transaction
     RadarWorker->SharedDB: insert radar_user_actions\nfor accumulated candidates
     note right of SharedDB: affected_products and action_items\nare stored as JSONB on radar_user_actions
-    RadarWorker->SharedDB: insert radar_email_deliveries for active recipients
+    RadarWorker->SharedDB: insert radar_email_deliveries\nwith email payload snapshots for active recipients
     RadarWorker->SharedDB: set action_calculate_status = succeeded\nincrement action_calculate_attempt_count
     RadarWorker->SharedDB: commit
   end
@@ -278,15 +278,15 @@ participant EmailProvider
 
 Scheduler->RadarWorker: run_periodic_cycle()
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
-note right of RadarWorker: send_action_notifications() sends one delivery at a time\nEach delivery is checked against the latest recipient status
-note right of RadarWorker: Recipient checks are best-effort\nA same-moment unsubscribe race is accepted in 1.0
+note right of RadarWorker: send_action_notifications() loads a batch of deliveries\nEach delivery is handled serially and checks latest recipient status
+note right of RadarWorker: Recipient checks are best-effort\nA same-moment unsubscribe race may still send once
 
-loop select and send one delivery at a time
-  RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3
+RadarWorker->SharedDB: select email deliveries\nstatus in pending/failed\nattempt_count < 3\nlimit N
 
-  alt no delivery selected
+alt no deliveries selected
     RadarWorker->RadarWorker: stop email stage
-  else delivery selected
+else deliveries selected
+  loop each selected delivery
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: load recipient
 
@@ -296,7 +296,7 @@ loop select and send one delivery at a time
     else recipient is active
       RadarWorker->SharedDB: commit
 
-      RadarWorker->EmailService: send email with strict timeout
+      RadarWorker->EmailService: send email with delivery payload\nand strict timeout
       EmailService->EmailProvider: send email
       alt transient provider failure
         EmailService->EmailService: retry with backoff\nup to 3 RPC attempts
@@ -322,12 +322,12 @@ loop select and send one delivery at a time
   end
 end
 
-note right of RadarWorker: If provider accepted but process crashes before marking sent,\na retry may send a duplicate. This is accepted in 1.0.
+note right of RadarWorker: If provider accepted but process crashes before marking sent,\na later retry may send a duplicate.
 ```
 
 ## 7. Stage 6: Dispatch operational webhooks
 
-这张图描述 Lark operational webhook 的发送。Webhook event 是历史运营事件，不是当前业务状态投影；Stage 6 只发送 outbox，不重新检查业务主表、不删除 event、不补齐或同步 event。Lark 调用不在数据库事务内。
+这张图描述 Lark operational webhook 的发送。Webhook event 是历史运营事件，不是实时业务状态投影；Stage 6 只按 outbox 状态发送事件。Lark 调用不在数据库事务内。
 
 ```text
 title 7. Stage 6 - Dispatch Operational Webhooks
@@ -340,14 +340,14 @@ participant LarkTeam
 
 Scheduler->RadarWorker: run_periodic_cycle()
 RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
-note right of RadarWorker: dispatch_operational_webhooks() sends one event at a time\nEach event uses status and attempt_count for durable retry
+note right of RadarWorker: dispatch_operational_webhooks() loads a batch of events\nEach event is handled serially with durable retry
 
-loop select and send one webhook event at a time
-  RadarWorker->SharedDB: select one webhook event\nstatus in pending/failed\nattempt_count < 3
+RadarWorker->SharedDB: select webhook events\nstatus in pending/failed\nattempt_count < 3\nlimit N
 
-  alt no event selected
-    RadarWorker->RadarWorker: stop webhook stage
-  else event selected
+alt no events selected
+  RadarWorker->RadarWorker: stop webhook stage
+else events selected
+  loop each selected event
     RadarWorker->WebhookService: send webhook event with strict timeout
     WebhookService->LarkTeam: send Lark webhook
     alt transient webhook failure
@@ -373,7 +373,7 @@ end
 
 ## 8. Policy Impact Review Flow
 
-这张图描述 reviewer 如何查看、编辑、保存、approve policy impact。Approve 只推进审核状态；后续 user actions 和邮件由周期任务处理。
+这张图描述 reviewer 如何查看、编辑、保存、approve policy impact。Approve 只推进审核状态；user actions 和邮件由周期任务处理。
 
 ```text
 title 8. Policy Impact Review Flow

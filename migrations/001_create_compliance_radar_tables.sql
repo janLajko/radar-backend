@@ -140,6 +140,7 @@ CREATE TABLE radar_email_deliveries (
   id bigserial PRIMARY KEY,
   user_action_id bigint NOT NULL,
   recipient_id bigint NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
   last_attempt_at timestamptz,
@@ -151,6 +152,8 @@ CREATE TABLE radar_email_deliveries (
     UNIQUE (user_action_id, recipient_id),
   CONSTRAINT chk_radar_email_deliveries_status
     CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
+  CONSTRAINT chk_radar_email_deliveries_payload_object
+    CHECK (jsonb_typeof(payload) = 'object'),
   CONSTRAINT chk_radar_email_deliveries_attempt_count
     CHECK (attempt_count >= 0)
 );
