@@ -66,7 +66,7 @@ radar_webhook_events N -> operational entities
 - 黑盒 policy impact 表由黑盒 owner 维护；Radar 自有表只保存 `radar_policy_updates` 上的抽取、审核与 user actions 计算状态。
 - `radar_user_actions(user_id, policy_update_id)` 加唯一约束，保证一个用户对一个 policy update 最多一条 action 记录。
 - `radar_email_deliveries(user_action_id, recipient_id)` 加唯一约束，保证同一 action 对同一个 recipient 最多一封邮件。
-- `radar_webhook_events(event_type, entity_type, entity_id, channel)` 加唯一约束，保证同一个运营事件按实体去重。
+- `radar_webhook_events(event_type, entity_type, entity_id)` 加唯一约束，保证同一个运营事件按实体去重。
 - `radar_webhook_events` 的业务写入语义是 insert-if-absent：同一事件已存在时不更新。
 
 关系约束边界：
@@ -464,7 +464,7 @@ LIMIT :limit
 
 ### 5.6 `radar_webhook_events`
 
-保存内部运营 webhook outbox。1.0 用于两类通知：policy impact ready for review，以及 durable attempt_count 达到上限后的人工排查告警。发送渠道为 Lark Team。
+保存内部运营 webhook outbox。1.0 用于两类通知：policy impact ready for review，以及 durable attempt_count 达到上限后的人工排查告警。具体发送目标由 `WebhookService` 配置决定，不落库。
 
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
@@ -472,7 +472,6 @@ LIMIT :limit
 | `event_type` | `text` | 是 |  | unique 组合项；check enum | 事件类型 |
 | `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `policy_update` / `policy_impact` / `policy_extract` / `action_calculate` / `email_delivery` |
 | `entity_id` | `bigint` | 是 |  | unique 组合项 | 关联实体 ID |
-| `channel` | `text` | 是 | `'lark_team'` | unique 组合项 | 通知渠道 |
 | `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照；内部结构由发送器契约定义 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | webhook 发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
@@ -485,7 +484,7 @@ LIMIT :limit
 
 ```sql
 PRIMARY KEY (id)
-UNIQUE (event_type, entity_type, entity_id, channel)
+UNIQUE (event_type, entity_type, entity_id)
 CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted'))
 CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery'))
 CHECK (jsonb_typeof(payload) = 'object')
@@ -666,8 +665,8 @@ ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
 ALTER TABLE radar_webhook_events
-  ADD CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id_channel
-  UNIQUE (event_type, entity_type, entity_id, channel);
+  ADD CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id
+  UNIQUE (event_type, entity_type, entity_id);
 ```
 
 ## 8. 实现注意事项

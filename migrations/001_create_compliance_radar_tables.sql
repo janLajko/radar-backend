@@ -168,7 +168,6 @@ CREATE TABLE radar_webhook_events (
   event_type text NOT NULL,
   entity_type text NOT NULL,
   entity_id bigint NOT NULL,
-  channel text NOT NULL DEFAULT 'lark_team',
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
@@ -177,8 +176,8 @@ CREATE TABLE radar_webhook_events (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id_channel
-    UNIQUE (event_type, entity_type, entity_id, channel),
+  CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id
+    UNIQUE (event_type, entity_type, entity_id),
   CONSTRAINT chk_radar_webhook_events_event_type
     CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   CONSTRAINT chk_radar_webhook_events_entity_type
