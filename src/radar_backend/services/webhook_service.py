@@ -10,14 +10,22 @@ from typing import Any
 
 from radar_backend import config
 from radar_backend.domain import WebhookEventModel
+from radar_backend.services.rate_limit import TokenBucket
 
 _LARK_TIMEOUT_SECONDS = 10
+_LARK_WEBHOOK_RPM = 80
+_LARK_WEBHOOK_BURST = 4
 _RETRY_BACKOFF_SECONDS = (10, 30)
 _MAX_ATTEMPT_COUNT = len(_RETRY_BACKOFF_SECONDS) + 1
 _MAX_RESPONSE_BODY_BYTES = 64 * 1024
 _MAX_ERROR_BODY_LENGTH = 1000
 
 logger = logging.getLogger(__name__)
+_LARK_WEBHOOK_BUCKET = TokenBucket(
+    name="lark_webhook",
+    rpm=_LARK_WEBHOOK_RPM,
+    burst=_LARK_WEBHOOK_BURST,
+)
 
 
 class WebhookSendError(RuntimeError):
@@ -72,6 +80,7 @@ def _post_lark_message_with_retry(event: WebhookEventModel) -> None:
             time.sleep(_RETRY_BACKOFF_SECONDS[attempt_index - 1])
 
         try:
+            _LARK_WEBHOOK_BUCKET.acquire(1)
             _post_lark_message_once(lark_webhook_url, body)
             return
         except WebhookSendError as exc:

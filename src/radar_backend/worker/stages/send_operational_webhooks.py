@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from radar_backend import config
 from radar_backend.db.connection import (
@@ -16,6 +17,7 @@ from radar_backend.worker.stages.base import StageResult
 logger = logging.getLogger(__name__)
 
 _WEBHOOK_EVENT_BATCH_SIZE = 500
+_WEBHOOK_SEND_MAX_WORKERS = 10
 
 
 class SendOperationalWebhooksStage:
@@ -37,19 +39,29 @@ class SendOperationalWebhooksStage:
             len(events),
             context.run_id,
         )
+        if not events:
+            return StageResult()
 
-        for event in events:
-            try:
-                _process_webhook_event(event)
-            except Exception:
-                logger.exception(
-                    "webhook event processing failed unexpectedly: "
-                    "id=%s event_type=%s entity_type=%s entity_id=%s",
-                    event["id"],
-                    event["event_type"],
-                    event["entity_type"],
-                    event["entity_id"],
-                )
+        with ThreadPoolExecutor(
+            max_workers=_WEBHOOK_SEND_MAX_WORKERS,
+            thread_name_prefix="webhook-send",
+        ) as pool:
+            futures = [
+                (event, pool.submit(_process_webhook_event, event))
+                for event in events
+            ]
+            for event, future in futures:
+                try:
+                    future.result()
+                except Exception:
+                    logger.exception(
+                        "webhook event processing escaped worker thread: "
+                        "id=%s event_type=%s entity_type=%s entity_id=%s",
+                        event["id"],
+                        event["event_type"],
+                        event["entity_type"],
+                        event["entity_id"],
+                    )
 
         return StageResult()
 

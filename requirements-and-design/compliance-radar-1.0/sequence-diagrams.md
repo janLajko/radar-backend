@@ -335,20 +335,23 @@ title 7. Stage 6 - Send Operational Webhooks
 participant Scheduler
 participant RadarWorker
 participant SharedDB
+participant WebhookThreadPool
 participant WebhookService
 participant LarkTeam
 
 Scheduler->RadarWorker: run_periodic_cycle()
 RadarWorker->RadarWorker: Stage 6. Send operational webhooks
-note right of RadarWorker: send_operational_webhooks() loads a batch of events\nEach event is handled serially with durable retry
+note right of RadarWorker: send_operational_webhooks() loads up to 500 events\nEvents are processed by a per-cycle thread pool\nEach event writes back independently
 
-RadarWorker->SharedDB: select webhook events\nstatus in pending/failed\nattempt_count < 3\nlimit N
+RadarWorker->SharedDB: select webhook events\nstatus in pending/failed\nattempt_count < 3\nlimit 500
 
 alt no events selected
   RadarWorker->RadarWorker: stop webhook stage
 else events selected
-  loop each selected event
-    RadarWorker->WebhookService: send webhook event with strict timeout
+  RadarWorker->WebhookThreadPool: submit selected events\nmax_workers = 10
+  loop each submitted event task
+    WebhookThreadPool->WebhookService: send webhook event with strict timeout
+    note right of WebhookService: Lark calls pass through local token bucket\nrpm = 80, burst = 4
     WebhookService->LarkTeam: send Lark webhook
     alt transient webhook failure
       WebhookService->WebhookService: retry with backoff\nup to 3 RPC attempts
@@ -356,18 +359,19 @@ else events selected
 
     alt webhook accepted
       LarkTeam-->WebhookService: accepted
-      WebhookService-->RadarWorker: accepted
-      RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
-      RadarWorker->SharedDB: commit
+      WebhookService-->WebhookThreadPool: accepted
+      WebhookThreadPool->SharedDB: begin short transaction
+      WebhookThreadPool->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
+      WebhookThreadPool->SharedDB: commit
     else webhook failed or timed out
       LarkTeam-->WebhookService: failure
-      WebhookService-->RadarWorker: failure
-      RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
-      RadarWorker->SharedDB: commit
+      WebhookService-->WebhookThreadPool: failure
+      WebhookThreadPool->SharedDB: begin short transaction
+      WebhookThreadPool->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
+      WebhookThreadPool->SharedDB: commit
     end
   end
+  WebhookThreadPool-->RadarWorker: all submitted event tasks finished
 end
 ```
 
