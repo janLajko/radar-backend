@@ -37,11 +37,17 @@ class EmailDeliveryPayload(TypedDict, total=False):
 
 
 class PolicyImpactReadyForReviewPayload(TypedDict, total=False):
-    pass
+    headline: str
+    source_label: str
+    reference_number: str | None
+    review_url: str
 
 
 class AttemptExhaustedPayload(TypedDict, total=False):
-    pass
+    reason: str
+    headline: str
+    source_label: str
+    reference_number: str | None
 
 
 type WebhookPayload = PolicyImpactReadyForReviewPayload | AttemptExhaustedPayload
