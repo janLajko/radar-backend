@@ -4,6 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
+from radar_backend import config
 from radar_backend.sources.base import RawSourceItemCandidate
 from radar_backend.sources.config import SourceConfig, load_source_configs
 from radar_backend.sources.executive_order import ExecutiveOrderAdapter
@@ -13,6 +14,11 @@ from radar_backend.sources.hts_archive import HTSArchiveAdapter
 from radar_backend.sources.proclamation import ProclamationAdapter
 from radar_backend.worker.context import WorkerContext
 from radar_backend.worker.stages.base import StageResult
+from radar_backend.db.repositories import raw_source_items_repository
+from radar_backend.db.connection import (
+    acquire_connection,
+    acquire_connection_with_transaction,
+)
 
 _ADAPTER_REGISTRY = {
     "proclamation": ProclamationAdapter(),
@@ -21,18 +27,19 @@ _ADAPTER_REGISTRY = {
     "hts_archive": HTSArchiveAdapter(),
 }
 
+logger = logging.getLogger(__name__)
+
 
 class CollectSourceItemsStage:
     name = "collect_source_items"
 
     def run(self, context: WorkerContext) -> StageResult:
-        logger = context.logger
-        configs = load_source_configs(Path(context.settings.source_config_path))
+        configs = load_source_configs(Path(config.source_config_path()))
         enabled = [c for c in configs if c.enabled]
 
         if not enabled:
             logger.info("collect_source_items: no enabled sources configured")
-            return StageResult(stage_name=self.name)
+            return StageResult()
 
         http = HttpClient()
 
@@ -60,15 +67,14 @@ class CollectSourceItemsStage:
 
         # --- Stage 1b: write new items to DB (all adapters must finish first) ---
         inserted_total = 0
-        repo = context.repositories.raw_source_items
 
-        with context.db.connection() as conn:
+        with acquire_connection_with_transaction() as conn:
             for cfg in enabled:
                 candidates = per_source.get(cfg.source_key, [])
                 inserted = 0
                 skipped = 0
                 for candidate in candidates:
-                    if repo.insert_if_not_exists(
+                    if raw_source_items_repository.insert_if_not_exists(
                         conn, candidate, cfg.source_key, cfg.source_label
                     ):
                         inserted += 1
@@ -82,7 +88,7 @@ class CollectSourceItemsStage:
                 )
                 inserted_total += inserted
 
-        return StageResult(stage_name=self.name, processed_count=inserted_total)
+        return StageResult()
 
 
 def _run_adapter(

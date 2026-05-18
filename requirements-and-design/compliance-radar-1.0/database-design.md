@@ -1,6 +1,6 @@
 # Compliance Radar BLB 1.0 数据库设计
 
-最后更新：2026-05-12
+最后更新：2026-05-14
 
 本文档描述 Compliance Radar BLB 1.0 的数据库表结构设计。本文只覆盖 Radar 自有表；黑盒 Policy Impact 表由黑盒 owner 设计，不在本文中展开，但黑盒表必须能通过 `policy_update_id` 与 `radar_policy_updates.id` 关联。
 
@@ -12,7 +12,7 @@
 - 每张表都有 `created_at` 和 `updated_at`。
 - 时间戳字段默认使用 `timestamptz`。
 - 日期字段如 policy/action 生效日期使用 `date`。
-- 状态字段使用 `text` + check constraint，避免过早引入 Postgres enum 的 migration 成本。
+- 状态字段使用 `text` + check constraint，便于 migration 管理。
 - 表字段顺序遵循：主键、身份/关联字段、业务域快照、核心内容、状态/计数字段、时间戳。
 - 数据库约束只覆盖幂等唯一键、状态枚举、计数非负和 JSON 根类型；不施加 DB-level 外键，复杂业务规则由应用层负责。
 - 错误详情不入库；错误排查依赖应用日志。
@@ -66,14 +66,15 @@ radar_webhook_events N -> operational entities
 - 黑盒 policy impact 表由黑盒 owner 维护；Radar 自有表只保存 `radar_policy_updates` 上的抽取、审核与 user actions 计算状态。
 - `radar_user_actions(user_id, policy_update_id)` 加唯一约束，保证一个用户对一个 policy update 最多一条 action 记录。
 - `radar_email_deliveries(user_action_id, recipient_id)` 加唯一约束，保证同一 action 对同一个 recipient 最多一封邮件。
-- `radar_webhook_events(event_type, entity_type, entity_id, channel)` 加唯一约束，保证同一个运营事件按实体去重。
+- `radar_webhook_events(event_type, entity_type, entity_id)` 加唯一约束，保证同一个运营事件按实体去重。
+- `radar_webhook_events` 的业务写入语义是 insert-if-absent：同一事件已存在时不更新。
 
 关系约束边界：
 
 - 本文中的关系是业务关系，不表示数据库外键。
-- `user_id/completed_by` 指向 `classification-backend` 现有用户身份，当前按 `bigint` 存储，但不加数据库外键。
+- `user_id/completed_by` 指向 `classification-backend` 现有用户身份，按 `bigint` 存储，但不加数据库外键。
 - `raw_source_item_id/policy_update_id/user_action_id/recipient_id` 都由应用层按业务流程维护一致性，不加数据库外键。
-- 产品数据通过 `radar_user_actions.affected_products` 内的 `product_uid` 以快照形式保存。`classification-backend` 现有产品链路已经以 `product_uid` 作为产品身份；1.0 不加硬外键，避免产品表演进影响历史 action 展示与跳转。
+- 产品数据通过 `radar_user_actions.affected_products` 内的 `product_uid` 以快照形式保存。`classification-backend` 产品链路以 `product_uid` 作为产品身份；1.0 不加硬外键，避免产品表变化影响历史 action 展示与跳转。
 
 ## 4. 状态机
 
@@ -98,7 +99,7 @@ radar_webhook_events N -> operational entities
 
 | 枚举值 | 含义 | 后续行为 |
 | --- | --- | --- |
-| `pending` | 尚未审核过 | 当 `policy_extract_status = succeeded` 时可审核 |
+| `confirm_needed` | 需要人工确认或保持不推进 | 当 `policy_extract_status = succeeded` 时可确认 |
 | `approved` | 人工审核通过 | 允许进入 user action 计算 |
 
 ### 4.4 `radar_policy_updates.action_calculate_status`
@@ -127,7 +128,7 @@ radar_webhook_events N -> operational entities
 
 | 枚举值 | 含义 | 是否可用于新邮件 |
 | --- | --- | --- |
-| `active` | 当前有效收件人 | 是 |
+| `active` | 有效收件人 | 是 |
 | `unsubscribed` | 用户通过 unsubscribe 链接退订 | 否 |
 | `deleted` | 用户在页面中删除 | 否 |
 
@@ -138,6 +139,7 @@ radar_webhook_events N -> operational entities
 | `pending` | 待发送 | 是，若 `attempt_count < 3` |
 | `sent` | 已发送成功 | 否 |
 | `failed` | 发送失败 | 是，若 `attempt_count < 3` |
+| `skipped` | 发送前发现 recipient 已不再 active，因此跳过发送 | 否 |
 
 ### 4.9 `radar_webhook_events.event_type`
 
@@ -165,11 +167,11 @@ radar_webhook_events N -> operational entities
 | Create policy impacts | `radar_policy_updates.policy_extract_status IN ('pending', 'failed') AND policy_extract_attempt_count < 3` | `radar_policy_updates.policy_extract_attempt_count` |
 | Create user actions | `radar_policy_updates.policy_review_status = 'approved' AND action_calculate_status IN ('pending', 'failed') AND action_calculate_attempt_count < 3` | `radar_policy_updates.action_calculate_attempt_count` |
 | Send action notification emails | `radar_email_deliveries.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_email_deliveries.attempt_count` |
-| Dispatch operational webhooks | `radar_webhook_events.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_webhook_events.attempt_count` |
+| Send operational webhooks | `radar_webhook_events.status IN ('pending', 'failed') AND attempt_count < 3` | `radar_webhook_events.attempt_count` |
 
 `attempt_count` 表示已经完成的 durable attempts。计数不在重型操作前递增，而是在操作返回后，和状态写回放在同一个短事务中递增。如果进程在操作中途崩溃，本次 attempt 不计数，后续仍按各 stage 的幂等或重复发送语义处理。
 
-当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 写入或更新一条 `attempt_exhausted` webhook event。Webhook 发送由 Stage 6 按 `status/attempt_count` 状态驱动。
+当某次处理失败，并且对应 durable attempt_count 已达到上限后，worker 尝试创建一条 `attempt_exhausted` webhook event。Webhook 发送由 Stage 6 按 `status/attempt_count` 状态驱动。
 
 ## 5. 表结构详情
 
@@ -184,13 +186,13 @@ radar_webhook_events N -> operational entities
 | `source_label` | `text` | 是 |  |  | source 展示名称快照，来自配置文件 |
 | `source_item_key` | `text` | 是 |  | unique 组合项 | adapter 产出的稳定去重键 |
 | `source_url` | `text` | 是 |  |  | 原文 URL |
-| `title` | `text` | 是 |  |  | source item 标题 |
-| `published_at` | `timestamptz` | 否 |  |  | 源站发布时间 |
+| `source_metadata` | `jsonb` | 是 | `'{}'::jsonb` | check object | source adapter 产出的只读补充快照，不作为 1.0 查询条件 |
+| `source_title` | `text` | 是 |  |  | 源站原始标题 |
+| `source_content` | `text` | 是 |  |  | 清洗后的正文文本，作为 LLM 主要输入 |
 | `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表，不存 PDF 正文 |
-| `raw_metadata` | `jsonb` | 是 | `'{}'::jsonb` | check object | source adapter 产出的只读补充快照，不作为 1.0 查询条件 |
-| `raw_content` | `text` | 是 |  |  | 清洗后的正文文本，作为 LLM 主要输入 |
+| `reference_number` | `text` | 否 |  |  | 源站自己的可读编号，如 docket/document/notice number |
+| `published_at` | `timestamptz` | 否 |  |  | 源站发布时间 |
 | `policy_update_status` | `text` | 是 | `'pending'` | check enum；建议索引 | raw item 处理成 policy update 的状态 |
-| `discard_reason` | `text` | 否 |  |  | 当 `policy_update_status = discarded` 时记录过滤原因，用于 debug prompt 质量 |
 | `policy_update_attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | raw item 处理 durable 尝试次数 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
@@ -202,14 +204,14 @@ PRIMARY KEY (id)
 UNIQUE (source_key, source_item_key)
 CHECK (policy_update_status IN ('pending', 'ingested', 'discarded', 'failed'))
 CHECK (policy_update_attempt_count >= 0)
-CHECK (jsonb_typeof(raw_metadata) = 'object')
+CHECK (jsonb_typeof(source_metadata) = 'object')
 CHECK (jsonb_typeof(pdf_urls) = 'array')
 ```
 
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_raw_source_items_processing
+CREATE INDEX idx_radar_raw_source_items_policy_update_status_attempt_count
 ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, created_at);
 ```
 
@@ -224,18 +226,19 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 | `source_key` | `text` | 是 |  | 建议索引 | source 稳定标识快照 |
 | `source_label` | `text` | 是 |  |  | source 展示名称快照 |
 | `source_url` | `text` | 是 |  |  | 原文 URL 快照 |
-| `reference_number` | `text` | 否 |  |  | 源站自己的可读编号，如 docket/document/notice number |
-| `published_at` | `timestamptz` | 否 |  | 排序索引 | 源站发布时间 |
-| `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表快照 |
 | `source_metadata` | `jsonb` | 是 | `'{}'::jsonb` | check object | source 域只读补充快照，不作为 1.0 查询条件 |
+| `source_title` | `text` | 是 |  |  | 源站原始标题快照 |
+| `source_content` | `text` | 是 |  |  | 来自 raw item `source_content` 的清洗正文，不由 LLM 生成 |
+| `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表快照 |
+| `reference_number` | `text` | 否 |  |  | 源站自己的可读编号快照，可为空 |
+| `published_at` | `timestamptz` | 否 |  | 排序索引 | 源站发布时间 |
+| `effective_date` | `date` | 否 |  |  | 政策级生效日期，可为空 |
 | `headline` | `text` | 是 |  |  | policy update 标题 |
 | `summary` | `text` | 是 |  |  | 列表摘要 |
-| `briefing_markdown` | `text` | 是 |  |  | 详情页 briefing，Markdown 文本 |
-| `original_text` | `text` | 是 |  |  | 来自 raw item `raw_content` 的清洗正文，不由 LLM 生成 |
-| `effective_date` | `date` | 否 |  |  | 政策级生效日期，可为空 |
+| `briefing` | `text` | 是 |  |  | 详情页 briefing 文本 |
 | `policy_extract_status` | `text` | 是 | `'pending'` | check enum；建议索引 | policy impact 抽取状态 |
 | `policy_extract_attempt_count` | `integer` | 是 | `0` | check `>= 0` | policy impact 抽取 durable 尝试次数 |
-| `policy_review_status` | `text` | 是 | `'pending'` | check enum；建议索引 | 人工审核状态 |
+| `policy_review_status` | `text` | 是 | `'confirm_needed'` | check enum；建议索引 | 人工审核状态 |
 | `action_calculate_status` | `text` | 是 | `'pending'` | check enum；建议索引 | user actions 计算状态 |
 | `action_calculate_attempt_count` | `integer` | 是 | `0` | check `>= 0` | user actions 计算 durable 尝试次数 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
@@ -247,7 +250,7 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 PRIMARY KEY (id)
 UNIQUE (raw_source_item_id)
 CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed'))
-CHECK (policy_review_status IN ('pending', 'approved'))
+CHECK (policy_review_status IN ('confirm_needed', 'approved'))
 CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed'))
 CHECK (policy_extract_attempt_count >= 0)
 CHECK (action_calculate_attempt_count >= 0)
@@ -258,16 +261,16 @@ CHECK (jsonb_typeof(source_metadata) = 'object')
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_policy_updates_list
+CREATE INDEX idx_radar_policy_updates_published_at_created_at
 ON radar_policy_updates (published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_source_list
+CREATE INDEX idx_radar_policy_updates_source_key_published_at_created_at
 ON radar_policy_updates (source_key, published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_extract_work
+CREATE INDEX idx_radar_policy_updates_policy_extract_status_attempt_count
 ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_action_work
+CREATE INDEX idx_radar_policy_updates_review_action_calculate_attempt_count
 ON radar_policy_updates (policy_review_status, action_calculate_status, action_calculate_attempt_count, created_at);
 ```
 
@@ -275,7 +278,7 @@ ON radar_policy_updates (policy_review_status, action_calculate_status, action_c
 
 ```text
 policy_extract_status = pending
-policy_review_status = pending
+policy_review_status = confirm_needed
 action_calculate_status = pending
 ```
 
@@ -284,10 +287,10 @@ action_calculate_status = pending
 ```text
 approve only if:
 policy_extract_status = succeeded
-AND policy_review_status = pending
+AND policy_review_status = confirm_needed
 ```
 
-1.0 不单独保存 `approved_by/approved_at`。Review API 使用 `classification-backend` 现有 admin/internal auth，不引入单独审核 token；如果未来需要严格审计，应新增 review audit 表，而不是复用 `updated_at`。
+Review API 使用 `classification-backend` 现有 admin/internal auth，不引入单独审核 token。严格审核审计由独立 audit log 承载，不复用 `radar_policy_updates` 或 `updated_at`。
 
 ### 5.3 `radar_user_actions`
 
@@ -302,7 +305,7 @@ AND policy_review_status = pending
 | `action_items` | `jsonb` | 是 | `'[]'::jsonb` | check array | 建议 action items，最多包含 `reclassify_product` / `recalculate_tariff` |
 | `status` | `text` | 是 | `'action_needed'` | check enum；建议索引 | 用户 action 聚合状态 |
 | `completed_at` | `timestamptz` | 否 |  |  | 所有 items 完成时的时间；取消完成时清空 |
-| `completed_by` | `bigint` | 否 |  |  | 完成该 card 的用户；1.0 通常是当前登录用户 |
+| `completed_by` | `bigint` | 否 |  |  | 完成该 card 的用户，通常是登录用户 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -319,7 +322,7 @@ CHECK (jsonb_typeof(action_items) = 'array')
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_user_actions_user_status
+CREATE INDEX idx_radar_user_actions_user_id_status_created_at
 ON radar_user_actions (user_id, status, created_at DESC);
 ```
 
@@ -338,7 +341,7 @@ ON radar_user_actions (user_id, status, created_at DESC);
     {
       "product_uid": "string",
       "product_name": "string",
-      "hts_code": "string | null",
+      "hts_code": "string",
       "suggested_actions": ["reclassify_product", "recalculate_tariff"]
     }
   ],
@@ -379,11 +382,11 @@ CHECK (status IN ('active', 'unsubscribed', 'deleted'))
 建议索引：
 
 ```sql
-CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
+CREATE UNIQUE INDEX uq_radar_notification_recipients_user_id_email
 ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
-CREATE INDEX idx_radar_notification_recipients_user_status
+CREATE INDEX idx_radar_notification_recipients_user_id_status
 ON radar_notification_recipients (user_id, status);
 ```
 
@@ -404,18 +407,20 @@ ON radar_notification_recipients (user_id, status);
 
 ### 5.5 `radar_email_deliveries`
 
-保存每封 Impact Action 邮件的发送记录。发送由单实例 worker 串行处理，不使用数据库抢锁。
+保存每封 Impact Action 邮件的发送记录。发送由单实例 worker 的 Stage 5 处理；Stage 5 可使用有界、per-cycle sender thread pool，但不使用数据库抢锁或 lease。
 
-创建 delivery 时只针对当时 `active` 的 recipients。`unsubscribed/deleted` recipients 不进入 delivery 表；如果 delivery 创建后 recipient 状态变化，发送前再次检查并删除未发送 delivery。
+创建 delivery 时只针对当时 `active` 的 recipients。`unsubscribed/deleted` recipients 不进入 delivery 表；如果 delivery 创建后 recipient 状态变化，发送前再次检查并把未发送 delivery 标记为 `skipped`。
 
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
 | `user_action_id` | `bigint` | 是 |  | unique 组合项 | 对应用户 action |
 | `recipient_id` | `bigint` | 是 |  | unique 组合项 | 对应 recipient |
-| `recipient_email` | `text` | 是 |  |  | 发送目标邮箱快照 |
+| `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | 邮件发送 payload 快照；内部结构由发送器契约定义 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | 邮件发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
+| `last_attempt_at` | `timestamptz` | 否 |  |  | 最近一次外部邮件发送调用返回后的写回时间；`skipped` 不设置 |
+| `sent_at` | `timestamptz` | 否 |  |  | Email Provider accepted 后的写回时间；仅 `sent` 设置 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -424,16 +429,16 @@ ON radar_notification_recipients (user_id, status);
 ```sql
 PRIMARY KEY (id)
 UNIQUE (user_action_id, recipient_id)
-CHECK (status IN ('pending', 'sent', 'failed'))
+CHECK (status IN ('pending', 'sent', 'failed', 'skipped'))
+CHECK (jsonb_typeof(payload) = 'object')
 CHECK (attempt_count >= 0)
 ```
 
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_email_deliveries_send_work
-ON radar_email_deliveries (created_at)
-WHERE status IN ('pending', 'failed') AND attempt_count < 3;
+CREATE INDEX idx_radar_email_deliveries_status_attempt_count_created_at
+ON radar_email_deliveries (status, attempt_count, created_at);
 ```
 
 发送查询：
@@ -444,32 +449,35 @@ FROM radar_email_deliveries
 WHERE status IN ('pending', 'failed')
   AND attempt_count < 3
 ORDER BY created_at
-LIMIT 1
+LIMIT :limit
 ```
 
 说明：
 
 - 不存 `last_error`。
-- 无 `skipped` 状态。
+- delivery 创建时写入邮件发送业务 payload 快照；Stage 5 发送邮件时不回查非 email 业务表。
+- frontend links 不存入 payload，由 Stage 5 发送时基于稳定 id/token 和 frontend 配置渲染。
 - 发送前重新检查 recipient 是否 active。
-- 如果 recipient 已 unsubscribed/deleted，未发送 delivery 可删除。
-- Email Provider 调用通过 `EmailService` 在事务外发生；发送结果和 `attempt_count` 递增放在同一个短事务中写回。
-- SMTP accepted 但进程在写回 `sent` 前崩溃，可能导致后续重复发送；1.0 接受该 best-effort 语义。
+- 如果 recipient 已 unsubscribed/deleted，未发送 delivery 标记为 `skipped`，不递增 `attempt_count`，不设置 `last_attempt_at/sent_at`。
+- Email Provider 调用通过 `EmailService` 在事务外发生；发送结果、`attempt_count` 递增和 `last_attempt_at` 放在同一个短事务中写回。
+- 发送成功时设置 `status = sent` 和 `sent_at`；发送失败时设置 `status = failed`，不设置 `sent_at`。
+- SMTP accepted 但进程在写回 `sent` 前崩溃，可能导致后续重复发送；发送语义为 best-effort。
 
 ### 5.6 `radar_webhook_events`
 
-保存内部运营 webhook outbox。1.0 用于两类通知：policy impact ready for review，以及 durable attempt_count 达到上限后的人工排查告警。实际发送渠道暂定为 Lark Team。
+保存内部运营 webhook outbox。1.0 用于两类通知：policy impact ready for review，以及 durable attempt_count 达到上限后的人工排查告警。具体发送目标由 `WebhookService` 配置决定，不落库。
 
 | 字段 | 类型 | 必填 | 默认值 | 约束 / 索引 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | `id` | `bigserial` | 是 | 自增 | PK | 主键 |
 | `event_type` | `text` | 是 |  | unique 组合项；check enum | 事件类型 |
-| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `raw_policy_update` / `policy_extract` / `action_calculate` / `email_delivery` |
+| `entity_type` | `text` | 是 |  | unique 组合项 | 关联处理单元，如 `policy_update` / `policy_impact` / `policy_extract` / `action_calculate` / `email_delivery` |
 | `entity_id` | `bigint` | 是 |  | unique 组合项 | 关联实体 ID |
-| `channel` | `text` | 是 | `'lark_team'` | unique 组合项 | 通知渠道 |
 | `payload` | `jsonb` | 是 | `'{}'::jsonb` | check object | webhook payload 快照；内部结构由发送器契约定义 |
 | `status` | `text` | 是 | `'pending'` | check enum；建议索引 | webhook 发送状态 |
 | `attempt_count` | `integer` | 是 | `0` | check `>= 0`；建议索引 | durable 发送尝试次数 |
+| `last_attempt_at` | `timestamptz` | 否 |  |  | 最近一次外部 webhook 调用返回后的写回时间 |
+| `sent_at` | `timestamptz` | 否 |  |  | Lark accepted 后的写回时间；仅 `sent` 设置 |
 | `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
@@ -477,9 +485,9 @@ LIMIT 1
 
 ```sql
 PRIMARY KEY (id)
-UNIQUE (event_type, entity_type, entity_id, channel)
+UNIQUE (event_type, entity_type, entity_id)
 CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted'))
-CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery'))
+CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery'))
 CHECK (jsonb_typeof(payload) = 'object')
 CHECK (status IN ('pending', 'sent', 'failed'))
 CHECK (attempt_count >= 0)
@@ -488,18 +496,20 @@ CHECK (attempt_count >= 0)
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_webhook_events_dispatch_work
+CREATE INDEX idx_radar_webhook_events_status_attempt_count_created_at
 ON radar_webhook_events (status, attempt_count, created_at);
 ```
 
 发送规则：
 
+- 业务 stage 只用 insert-if-absent 创建事件；同一事件已存在时不更新任何字段。
 - 扫描 `status IN ('pending', 'failed') AND attempt_count < 3`。
 - Lark webhook 调用通过 `WebhookService` 在事务外发生，内部 RPC retry 最多 3 次。
-- 发送成功后用短事务设置 `status = sent` 并递增 `attempt_count`。
-- 发送失败后用短事务设置 `status = failed` 并递增 `attempt_count`；后续周期任务自然重试，直到 `attempt_count` 达到 3。
+- 发送成功后用短事务设置 `status = sent`、`sent_at`、`last_attempt_at`，并递增 `attempt_count`。
+- 发送失败后用短事务设置 `status = failed`、`last_attempt_at`，并递增 `attempt_count`；周期任务按状态重试，直到 `attempt_count` 达到 3。
+- Stage 6 发送后只用普通 `UPDATE` 推进 `status/attempt_count/last_attempt_at/sent_at`。
 
-`entity_id` 指向对应处理单元的主记录：`raw_policy_update` 使用 `radar_raw_source_items.id`，`policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`，`email_delivery` 使用 `radar_email_deliveries.id`。
+`entity_id` 指向对应处理单元的主记录：`policy_update` 表示 raw item 转 policy update 这个处理阶段，使用 `radar_raw_source_items.id`；`policy_impact` / `policy_extract` / `action_calculate` 使用 `radar_policy_updates.id`；`email_delivery` 使用 `radar_email_deliveries.id`。
 
 ## 6. 关键事务边界
 
@@ -512,7 +522,7 @@ insert radar_policy_updates
 update radar_raw_source_items.policy_update_status = ingested
 ```
 
-如果事务失败，则 raw item 留在 `failed` 或当前状态，后续按 attempt_count 规则回补。
+如果事务失败，则 raw item 留在 `failed` 或原状态，按 attempt_count 规则回补。
 
 ### 6.2 Action 计算落库
 
@@ -520,11 +530,11 @@ update radar_raw_source_items.policy_update_status = ingested
 
 ```text
 insert radar_user_actions with affected_products and action_items JSON for accumulated candidates
-insert radar_email_deliveries for active recipients
+insert radar_email_deliveries with payload snapshots for active recipients
 update radar_policy_updates.action_calculate_status = succeeded
 ```
 
-如果计算失败，设置 `action_calculate_status = failed`，不写入 user actions 或 email deliveries。若失败后 `action_calculate_attempt_count` 已达到上限，则写入或更新 `attempt_exhausted` webhook event。
+如果计算失败，设置 `action_calculate_status = failed`，不写入 user actions 或 email deliveries。若失败后 `action_calculate_attempt_count` 已达到上限，则尝试创建 `attempt_exhausted` webhook event。
 
 邮件发送必须在事务提交后进行。
 
@@ -544,22 +554,24 @@ update radar_user_actions completed_at/completed_by if needed
 邮件发送不使用长事务：
 
 ```text
-select one eligible delivery
-short transaction: check recipient active
-send email outside transaction via EmailService
-short transaction: update delivery status and increment attempt_count
+select eligible deliveries with limit
+for each delivery:
+  short transaction: check recipient active
+  send email outside transaction via EmailService
+  short transaction: write skipped or send result fields
 ```
 
-如果 recipient 已不是 active，短事务删除未发送 delivery。发送前检查是 best-effort；检查后立即 unsubscribe 的极小竞态本期接受。Email Provider 调用必须设置严格 timeout。
+如果 recipient 已不是 active，短事务标记未发送 delivery 为 `skipped`。发送前检查是 best-effort；检查后立即 unsubscribe 的极小竞态可能仍会发送一次。Email Provider 调用必须设置严格 timeout。
 
 ### 6.5 Operational Webhook 发送
 
 Lark webhook 发送不使用长事务：
 
 ```text
-select one eligible webhook event
-send Lark webhook outside transaction via WebhookService
-short transaction: update webhook event status and increment attempt_count
+select eligible webhook events with limit
+for each webhook event:
+  send Lark webhook outside transaction via WebhookService
+  short transaction: update webhook event status, attempt_count, last_attempt_at, sent_at
 ```
 
 ## 7. 约束汇总
@@ -572,8 +584,8 @@ ALTER TABLE radar_raw_source_items
   CHECK (policy_update_status IN ('pending', 'ingested', 'discarded', 'failed')),
   ADD CONSTRAINT chk_radar_raw_policy_update_attempt_count
   CHECK (policy_update_attempt_count >= 0),
-  ADD CONSTRAINT chk_radar_raw_metadata_object
-  CHECK (jsonb_typeof(raw_metadata) = 'object'),
+  ADD CONSTRAINT chk_radar_raw_source_metadata_object
+  CHECK (jsonb_typeof(source_metadata) = 'object'),
   ADD CONSTRAINT chk_radar_raw_pdf_urls_array
   CHECK (jsonb_typeof(pdf_urls) = 'array');
 
@@ -581,7 +593,7 @@ ALTER TABLE radar_policy_updates
   ADD CONSTRAINT chk_radar_policy_extract_status
   CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed')),
   ADD CONSTRAINT chk_radar_policy_review_status
-  CHECK (policy_review_status IN ('pending', 'approved')),
+  CHECK (policy_review_status IN ('confirm_needed', 'approved')),
   ADD CONSTRAINT chk_radar_action_calculate_status
   CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed')),
   ADD CONSTRAINT chk_radar_policy_extract_attempt_count
@@ -607,7 +619,9 @@ ALTER TABLE radar_notification_recipients
 
 ALTER TABLE radar_email_deliveries
   ADD CONSTRAINT chk_radar_email_deliveries_status
-  CHECK (status IN ('pending', 'sent', 'failed')),
+  CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
+  ADD CONSTRAINT chk_radar_email_deliveries_payload_object
+  CHECK (jsonb_typeof(payload) = 'object'),
   ADD CONSTRAINT chk_radar_email_deliveries_attempt_count
   CHECK (attempt_count >= 0);
 
@@ -615,7 +629,7 @@ ALTER TABLE radar_webhook_events
   ADD CONSTRAINT chk_radar_webhook_events_event_type
   CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   ADD CONSTRAINT chk_radar_webhook_events_entity_type
-  CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+  CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
   ADD CONSTRAINT chk_radar_webhook_events_status
   CHECK (status IN ('pending', 'sent', 'failed')),
   ADD CONSTRAINT chk_radar_webhook_events_payload_object
@@ -628,39 +642,39 @@ ALTER TABLE radar_webhook_events
 
 ```sql
 ALTER TABLE radar_raw_source_items
-  ADD CONSTRAINT uq_radar_raw_source_items_source_item
+  ADD CONSTRAINT uq_radar_raw_source_items_source_key_source_item_key
   UNIQUE (source_key, source_item_key);
 
 ALTER TABLE radar_policy_updates
-  ADD CONSTRAINT uq_radar_policy_updates_raw_source_item
+  ADD CONSTRAINT uq_radar_policy_updates_raw_source_item_id
   UNIQUE (raw_source_item_id);
 
 ALTER TABLE radar_user_actions
-  ADD CONSTRAINT uq_radar_user_actions_user_policy
+  ADD CONSTRAINT uq_radar_user_actions_user_id_policy_update_id
   UNIQUE (user_id, policy_update_id);
 
 ALTER TABLE radar_email_deliveries
-  ADD CONSTRAINT uq_radar_email_deliveries_action_recipient
+  ADD CONSTRAINT uq_radar_email_deliveries_user_action_id_recipient_id
   UNIQUE (user_action_id, recipient_id);
 
 ALTER TABLE radar_notification_recipients
   ADD CONSTRAINT uq_radar_notification_recipients_unsubscribe_token
   UNIQUE (unsubscribe_token);
 
-CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
+CREATE UNIQUE INDEX uq_radar_notification_recipients_user_id_email
 ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
 ALTER TABLE radar_webhook_events
-  ADD CONSTRAINT uq_radar_webhook_events_event_entity_channel
-  UNIQUE (event_type, entity_type, entity_id, channel);
+  ADD CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id
+  UNIQUE (event_type, entity_type, entity_id);
 ```
 
-## 8. 后续实现注意事项
+## 8. 实现注意事项
 
-以下事项不改变当前数据库主结构，后续实现时按需处理：
+以下事项不改变数据库主结构：
 
-1. `raw_metadata/source_metadata` 暂不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
+1. `source_metadata` 不建 GIN 索引。只有实现中确实出现 metadata 查询条件时再补。
 2. recipient email 使用 `lower(email)` partial unique index，不引入 `citext` extension。
-3. `pdf_urls` 当前按 `jsonb` array 设计，元素先按 URL 字符串处理；如果实现时需要更多附件元信息，可扩展为 object array，不需要改字段类型。
+3. `pdf_urls` 使用 `jsonb` array，元素先按 URL 字符串处理；如果实现时需要更多附件元信息，可扩展为 object array，不需要改字段类型。
 4. `product_uid`、`user_id`、`policy_update_id` 等关系字段不加硬外键，但 API 实现需要和 classification/sandbox 现有权限与数据一致性规则保持一致。

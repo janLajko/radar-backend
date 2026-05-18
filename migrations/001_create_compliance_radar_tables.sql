@@ -14,25 +14,25 @@ CREATE TABLE radar_raw_source_items (
   source_label text NOT NULL,
   source_item_key text NOT NULL,
   source_url text NOT NULL,
-  title text NOT NULL,
-  published_at timestamptz,
+  source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source_title text NOT NULL,
+  source_content text NOT NULL,
   pdf_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-  raw_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-  raw_content text NOT NULL,
+  reference_number text,
+  published_at timestamptz,
   policy_update_status text NOT NULL DEFAULT 'pending',
-  discard_reason text,
   policy_update_attempt_count integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_raw_source_items_source_item
+  CONSTRAINT uq_radar_raw_source_items_source_key_source_item_key
     UNIQUE (source_key, source_item_key),
   CONSTRAINT chk_radar_raw_policy_update_status
     CHECK (policy_update_status IN ('pending', 'ingested', 'discarded', 'failed')),
   CONSTRAINT chk_radar_raw_policy_update_attempt_count
     CHECK (policy_update_attempt_count >= 0),
-  CONSTRAINT chk_radar_raw_metadata_object
-    CHECK (jsonb_typeof(raw_metadata) = 'object'),
+  CONSTRAINT chk_radar_raw_source_metadata_object
+    CHECK (jsonb_typeof(source_metadata) = 'object'),
   CONSTRAINT chk_radar_raw_pdf_urls_array
     CHECK (jsonb_typeof(pdf_urls) = 'array')
 );
@@ -48,29 +48,30 @@ CREATE TABLE radar_policy_updates (
   source_key text NOT NULL,
   source_label text NOT NULL,
   source_url text NOT NULL,
+  source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source_title text NOT NULL,
+  source_content text NOT NULL,
+  pdf_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
   reference_number text,
   published_at timestamptz,
-  pdf_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-  source_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  effective_date date,
   headline text NOT NULL,
   summary text NOT NULL,
-  briefing_markdown text NOT NULL,
-  original_text text NOT NULL,
-  effective_date date,
+  briefing text NOT NULL,
   policy_extract_status text NOT NULL DEFAULT 'pending',
   policy_extract_attempt_count integer NOT NULL DEFAULT 0,
-  policy_review_status text NOT NULL DEFAULT 'pending',
+  policy_review_status text NOT NULL DEFAULT 'confirm_needed',
   action_calculate_status text NOT NULL DEFAULT 'pending',
   action_calculate_attempt_count integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_policy_updates_raw_source_item
+  CONSTRAINT uq_radar_policy_updates_raw_source_item_id
     UNIQUE (raw_source_item_id),
   CONSTRAINT chk_radar_policy_extract_status
     CHECK (policy_extract_status IN ('pending', 'succeeded', 'failed')),
   CONSTRAINT chk_radar_policy_review_status
-    CHECK (policy_review_status IN ('pending', 'approved')),
+    CHECK (policy_review_status IN ('confirm_needed', 'approved')),
   CONSTRAINT chk_radar_action_calculate_status
     CHECK (action_calculate_status IN ('pending', 'succeeded', 'failed')),
   CONSTRAINT chk_radar_policy_extract_attempt_count
@@ -100,7 +101,7 @@ CREATE TABLE radar_user_actions (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_user_actions_user_policy
+  CONSTRAINT uq_radar_user_actions_user_id_policy_update_id
     UNIQUE (user_id, policy_update_id),
   CONSTRAINT chk_radar_user_actions_status
     CHECK (status IN ('action_needed', 'completed')),
@@ -139,16 +140,20 @@ CREATE TABLE radar_email_deliveries (
   id bigserial PRIMARY KEY,
   user_action_id bigint NOT NULL,
   recipient_id bigint NOT NULL,
-  recipient_email text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
+  last_attempt_at timestamptz,
+  sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_email_deliveries_action_recipient
+  CONSTRAINT uq_radar_email_deliveries_user_action_id_recipient_id
     UNIQUE (user_action_id, recipient_id),
   CONSTRAINT chk_radar_email_deliveries_status
-    CHECK (status IN ('pending', 'sent', 'failed')),
+    CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
+  CONSTRAINT chk_radar_email_deliveries_payload_object
+    CHECK (jsonb_typeof(payload) = 'object'),
   CONSTRAINT chk_radar_email_deliveries_attempt_count
     CHECK (attempt_count >= 0)
 );
@@ -163,19 +168,20 @@ CREATE TABLE radar_webhook_events (
   event_type text NOT NULL,
   entity_type text NOT NULL,
   entity_id bigint NOT NULL,
-  channel text NOT NULL DEFAULT 'lark_team',
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'pending',
   attempt_count integer NOT NULL DEFAULT 0,
+  last_attempt_at timestamptz,
+  sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT uq_radar_webhook_events_event_entity_channel
-    UNIQUE (event_type, entity_type, entity_id, channel),
+  CONSTRAINT uq_radar_webhook_events_event_type_entity_type_id
+    UNIQUE (event_type, entity_type, entity_id),
   CONSTRAINT chk_radar_webhook_events_event_type
     CHECK (event_type IN ('policy_impact_ready_for_review', 'attempt_exhausted')),
   CONSTRAINT chk_radar_webhook_events_entity_type
-    CHECK (entity_type IN ('raw_policy_update', 'policy_extract', 'action_calculate', 'email_delivery')),
+    CHECK (entity_type IN ('policy_update', 'policy_impact', 'policy_extract', 'action_calculate', 'email_delivery')),
   CONSTRAINT chk_radar_webhook_events_status
     CHECK (status IN ('pending', 'sent', 'failed')),
   CONSTRAINT chk_radar_webhook_events_payload_object
@@ -189,36 +195,35 @@ BEFORE UPDATE ON radar_webhook_events
 FOR EACH ROW
 EXECUTE FUNCTION radar_set_updated_at();
 
-CREATE INDEX idx_radar_raw_source_items_processing
+CREATE INDEX idx_radar_raw_source_items_policy_update_status_attempt_count
 ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_list
+CREATE INDEX idx_radar_policy_updates_published_at_created_at
 ON radar_policy_updates (published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_source_list
+CREATE INDEX idx_radar_policy_updates_source_key_published_at_created_at
 ON radar_policy_updates (source_key, published_at DESC NULLS LAST, created_at DESC);
 
-CREATE INDEX idx_radar_policy_updates_extract_work
+CREATE INDEX idx_radar_policy_updates_policy_extract_status_attempt_count
 ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_action_work
+CREATE INDEX idx_radar_policy_updates_review_action_calculate_attempt_count
 ON radar_policy_updates (policy_review_status, action_calculate_status, action_calculate_attempt_count, created_at);
 
-CREATE INDEX idx_radar_user_actions_user_status
+CREATE INDEX idx_radar_user_actions_user_id_status_created_at
 ON radar_user_actions (user_id, status, created_at DESC);
 
-CREATE UNIQUE INDEX uq_radar_notification_recipients_user_email
+CREATE UNIQUE INDEX uq_radar_notification_recipients_user_id_email
 ON radar_notification_recipients (user_id, lower(email))
 WHERE status IN ('active', 'unsubscribed');
 
-CREATE INDEX idx_radar_notification_recipients_user_status
+CREATE INDEX idx_radar_notification_recipients_user_id_status
 ON radar_notification_recipients (user_id, status);
 
-CREATE INDEX idx_radar_email_deliveries_send_work
-ON radar_email_deliveries (created_at)
-WHERE status IN ('pending', 'failed') AND attempt_count < 3;
+CREATE INDEX idx_radar_email_deliveries_status_attempt_count_created_at
+ON radar_email_deliveries (status, attempt_count, created_at);
 
-CREATE INDEX idx_radar_webhook_events_dispatch_work
+CREATE INDEX idx_radar_webhook_events_status_attempt_count_created_at
 ON radar_webhook_events (status, attempt_count, created_at);
 
 COMMIT;

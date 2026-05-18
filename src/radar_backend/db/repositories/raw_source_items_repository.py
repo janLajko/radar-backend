@@ -1,33 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from typing import cast
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from radar_backend.db.repositories.base import BaseRepository
+from radar_backend.domain import RawSourceItemModel, RawSourceItemPolicyUpdateStatus
 from radar_backend.sources.base import RawSourceItemCandidate
 
 
-@dataclass(frozen=True)
-class RawSourceItem:
-    """Projection of radar_raw_source_items used by Stage 2."""
-
-    id: int
-    source_key: str
-    source_label: str
-    source_url: str
-    source_item_key: str
-    source_title: str
-    published_at: datetime | None
-    pdf_urls: list[str]
-    source_metadata: dict
-    source_content: str
-    policy_update_attempt_count: int
-
-
-class RawSourceItemsRepository(BaseRepository):
+class RawSourceItemsRepository:
     """radar_raw_source_items persistence boundary."""
 
     def insert_if_not_exists(
@@ -69,13 +51,14 @@ class RawSourceItemsRepository(BaseRepository):
         self,
         conn: Connection,
         limit: int = 100,
-    ) -> list[RawSourceItem]:
+    ) -> list[RawSourceItemModel]:
         """Return raw items eligible for Stage 2 processing."""
         cur = conn.execute(
             """
-            SELECT id, source_key, source_label, source_url, source_item_key,
-                   source_title, published_at, pdf_urls, source_metadata, source_content,
-                   policy_update_attempt_count
+            SELECT id, source_key, source_label, source_item_key, source_url,
+                   source_metadata, source_title, source_content, pdf_urls,
+                   reference_number, published_at, policy_update_status,
+                   policy_update_attempt_count, created_at, updated_at
             FROM radar_raw_source_items
             WHERE policy_update_status IN ('pending', 'failed')
               AND policy_update_attempt_count < 3
@@ -86,19 +69,23 @@ class RawSourceItemsRepository(BaseRepository):
         )
         rows = cur.fetchall()
         return [
-            RawSourceItem(
-                id=row[0],
-                source_key=row[1],
-                source_label=row[2],
-                source_url=row[3],
-                source_item_key=row[4],
-                source_title=row[5],
-                published_at=row[6],
-                pdf_urls=list(row[7]) if row[7] else [],
-                source_metadata=dict(row[8]) if row[8] else {},
-                source_content=row[9],
-                policy_update_attempt_count=row[10],
-            )
+            {
+                "id": row[0],
+                "source_key": row[1],
+                "source_label": row[2],
+                "source_item_key": row[3],
+                "source_url": row[4],
+                "source_metadata": cast(dict, row[5]) if row[5] else {},
+                "source_title": row[6],
+                "source_content": row[7],
+                "pdf_urls": list(row[8]) if row[8] else [],
+                "reference_number": row[9],
+                "published_at": row[10],
+                "policy_update_status": RawSourceItemPolicyUpdateStatus(row[11]),
+                "policy_update_attempt_count": row[12],
+                "created_at": row[13],
+                "updated_at": row[14],
+            }
             for row in rows
         ]
 

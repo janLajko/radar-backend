@@ -1,12 +1,12 @@
 # Compliance Radar BLB 1.0 时序图
 
-最后更新：2026-05-12
+最后更新：2026-05-14
 
 本文档使用 https://sequencediagram.org/ 支持的文本格式编写。每个代码块是一张独立时序图，可以单独复制到 sequencediagram.org 中渲染。
 
 ## 1. 周期任务总览
 
-这张图表达 Radar 主流程的外层编排，以及 policy impact 人工审核这个必经 gate。它只说明每一步的目的；各 stage 的实现细节在后续图中展开。
+这张图表达 Radar 主流程的外层编排，以及 policy impact 人工审核这个必经 gate。它只说明每一步的目的；各 stage 的细节见下列图。
 
 ```text
 title 1. Periodic Cycle Overview
@@ -36,7 +36,7 @@ note right of RadarWorker: Only approved policy impacts move forward\nActions ar
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
 note right of RadarWorker: New user actions create email deliveries\nEmail sending happens after actions are committed
 
-RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
+RadarWorker->RadarWorker: Stage 6. Send operational webhooks
 note right of RadarWorker: Review-ready and attempt-exhausted events are sent to Lark\nWebhook sending is driven by status and attempt_count
 
 note right of RadarWorker: Cycle summary:\n- Every cycle is state-driven\n- Each stage picks up newly eligible records\nand unfinished or failed records within retry limits
@@ -82,7 +82,7 @@ loop each enabled source
       SharedDB-->RadarWorker: inserted
     else row already exists
       SharedDB-->RadarWorker: skipped
-      note right of SharedDB: Existing raw item is not updated\nNo upsert in 1.0
+      note right of SharedDB: Existing raw item is skipped\nand not updated
     end
   end
 end
@@ -121,7 +121,7 @@ loop each selected raw item
       RadarWorker->SharedDB: begin short transaction
       RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
       opt new policy_update_attempt_count reached 3
-        RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
+        RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id\nentity_type = policy_update
       end
       RadarWorker->SharedDB: commit
       RadarWorker->RadarWorker: stop processing this raw item
@@ -130,7 +130,7 @@ loop each selected raw item
     end
   end
 
-  RadarWorker->LLM: filter + generate briefing\nraw_content + attachment context
+  RadarWorker->LLM: filter + generate briefing\nsource_content + attachment context
   alt transient LLM failure
     LLM->LLM: retry with backoff\nup to 3 RPC attempts
   end
@@ -140,7 +140,7 @@ loop each selected raw item
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_update_status = failed\nincrement policy_update_attempt_count
     opt new policy_update_attempt_count reached 3
-      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for raw_source_item_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for raw_source_item_id\nentity_type = policy_update
     end
     RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this raw item
@@ -148,10 +148,9 @@ loop each selected raw item
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_update_status = discarded\nincrement policy_update_attempt_count
     RadarWorker->SharedDB: commit
-    note right of RadarWorker: discard_reason is persisted\nfor prompt quality debugging
   else should_ingest = true
     RadarWorker->SharedDB: begin transaction
-    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and original_text\npolicy_extract_status = pending\npolicy_review_status = pending\naction_calculate_status = pending
+    RadarWorker->SharedDB: insert radar_policy_updates\nwrite source snapshot, briefing, and source_content\npolicy_extract_status = pending\npolicy_review_status = confirm_needed\naction_calculate_status = pending
     RadarWorker->SharedDB: set policy_update_status = ingested\nincrement policy_update_attempt_count
     RadarWorker->SharedDB: commit
   end
@@ -188,13 +187,13 @@ loop each selected policy update
   alt extract succeeded
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_extract_status = succeeded\nincrement policy_extract_attempt_count
-    RadarWorker->SharedDB: upsert radar_webhook_events\npolicy_impact_ready_for_review for policy_update_id
+    RadarWorker->SharedDB: insert webhook event if absent\npolicy_impact_ready_for_review for policy_update_id\nentity_type = policy_impact
     RadarWorker->SharedDB: commit
   else extract failed
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set policy_extract_status = failed\nincrement policy_extract_attempt_count
     opt new policy_extract_attempt_count reached 3
-      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for policy_update_id
     end
     RadarWorker->SharedDB: commit
   end
@@ -247,7 +246,7 @@ loop each selected policy update
     RadarWorker->SharedDB: begin short transaction
     RadarWorker->SharedDB: set action_calculate_status = failed\nincrement action_calculate_attempt_count
     opt new action_calculate_attempt_count reached 3
-      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
+      RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for policy_update_id
     end
     RadarWorker->SharedDB: commit
     RadarWorker->RadarWorker: stop processing this policy update
@@ -255,7 +254,7 @@ loop each selected policy update
     RadarWorker->SharedDB: begin transaction
     RadarWorker->SharedDB: insert radar_user_actions\nfor accumulated candidates
     note right of SharedDB: affected_products and action_items\nare stored as JSONB on radar_user_actions
-    RadarWorker->SharedDB: insert radar_email_deliveries for active recipients
+    RadarWorker->SharedDB: insert radar_email_deliveries\nwith email payload snapshots for active recipients
     RadarWorker->SharedDB: set action_calculate_status = succeeded\nincrement action_calculate_attempt_count
     RadarWorker->SharedDB: commit
   end
@@ -274,30 +273,32 @@ title 6. Stage 5 - Send Action Notification Emails
 participant Scheduler
 participant RadarWorker
 participant SharedDB
+participant EmailThreadPool
 participant EmailService
 participant EmailProvider
 
 Scheduler->RadarWorker: run_periodic_cycle()
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
-note right of RadarWorker: send_action_notifications() sends one delivery at a time\nEach delivery is checked against the latest recipient status
-note right of RadarWorker: Recipient checks are best-effort\nA same-moment unsubscribe race is accepted in 1.0
+note right of RadarWorker: send_action_notifications() loads up to N deliveries\nDeliveries are processed by a per-cycle thread pool\nEach delivery writes back independently
+note right of RadarWorker: Recipient checks are best-effort\nA same-moment unsubscribe race may still send once
 
-loop select and send one delivery at a time
-  RadarWorker->SharedDB: select one email delivery\nstatus in pending/failed\nattempt_count < 3
+RadarWorker->SharedDB: select email deliveries\nstatus in pending/failed\nattempt_count < 3\nlimit N
 
-  alt no delivery selected
+alt no deliveries selected
     RadarWorker->RadarWorker: stop email stage
-  else delivery selected
-    RadarWorker->SharedDB: begin short transaction
-    RadarWorker->SharedDB: load recipient
+else deliveries selected
+  RadarWorker->EmailThreadPool: submit selected deliveries
+  par each selected delivery
+    EmailThreadPool->SharedDB: begin short transaction
+    EmailThreadPool->SharedDB: load recipient
 
     alt recipient is not active
-      RadarWorker->SharedDB: delete unsent delivery
-      RadarWorker->SharedDB: commit
+      EmailThreadPool->SharedDB: set status = skipped
+      EmailThreadPool->SharedDB: commit
     else recipient is active
-      RadarWorker->SharedDB: commit
+      EmailThreadPool->SharedDB: commit
 
-      RadarWorker->EmailService: send email with strict timeout
+      EmailThreadPool->EmailService: send email with delivery payload\nand strict timeout
       EmailService->EmailProvider: send email
       alt transient provider failure
         EmailService->EmailService: retry with backoff\nup to 3 RPC attempts
@@ -305,51 +306,55 @@ loop select and send one delivery at a time
 
       alt provider accepted
         EmailProvider-->EmailService: accepted
-        EmailService-->RadarWorker: accepted
-        RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = sent\nincrement attempt_count
-        RadarWorker->SharedDB: commit
+        EmailService-->EmailThreadPool: accepted
+        EmailThreadPool->SharedDB: begin short transaction
+        EmailThreadPool->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
+        EmailThreadPool->SharedDB: commit
       else provider failed or timed out
         EmailProvider-->EmailService: failure
-        EmailService-->RadarWorker: failure
-        RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = failed\nincrement attempt_count
+        EmailService-->EmailThreadPool: failure
+        EmailThreadPool->SharedDB: begin short transaction
+        EmailThreadPool->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
         opt new attempt_count reached 3
-          RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for delivery_id
+          EmailThreadPool->SharedDB: insert webhook event if absent\nattempt_exhausted for delivery_id
         end
-        RadarWorker->SharedDB: commit
+        EmailThreadPool->SharedDB: commit
       end
     end
   end
+  EmailThreadPool-->RadarWorker: all delivery tasks completed
 end
 
-note right of RadarWorker: If provider accepted but process crashes before marking sent,\na retry may send a duplicate. This is accepted in 1.0.
+note right of RadarWorker: If provider accepted but process crashes before marking sent,\na later retry may send a duplicate.
 ```
 
-## 7. Stage 6: Dispatch operational webhooks
+## 7. Stage 6: Send operational webhooks
 
-这张图描述 Lark operational webhook 的发送。Webhook 发送由 outbox 状态驱动，Lark 调用不在数据库事务内。
+这张图描述 Lark operational webhook 的发送。Webhook event 是历史运营事件，不是实时业务状态投影；Stage 6 只按 outbox 状态发送事件。Lark 调用不在数据库事务内。
 
 ```text
-title 7. Stage 6 - Dispatch Operational Webhooks
+title 7. Stage 6 - Send Operational Webhooks
 
 participant Scheduler
 participant RadarWorker
 participant SharedDB
+participant WebhookThreadPool
 participant WebhookService
 participant LarkTeam
 
 Scheduler->RadarWorker: run_periodic_cycle()
-RadarWorker->RadarWorker: Stage 6. Dispatch operational webhooks
-note right of RadarWorker: dispatch_operational_webhooks() sends one event at a time\nEach event uses status and attempt_count for durable retry
+RadarWorker->RadarWorker: Stage 6. Send operational webhooks
+note right of RadarWorker: send_operational_webhooks() loads up to 500 events\nEvents are processed by a per-cycle thread pool\nEach event writes back independently
 
-loop select and send one webhook event at a time
-  RadarWorker->SharedDB: select one webhook event\nstatus in pending/failed\nattempt_count < 3
+RadarWorker->SharedDB: select webhook events\nstatus in pending/failed\nattempt_count < 3\nlimit 500
 
-  alt no event selected
-    RadarWorker->RadarWorker: stop webhook stage
-  else event selected
-    RadarWorker->WebhookService: send webhook event with strict timeout
+alt no events selected
+  RadarWorker->RadarWorker: stop webhook stage
+else events selected
+  RadarWorker->WebhookThreadPool: submit selected events\nmax_workers = 10
+  loop each submitted event task
+    WebhookThreadPool->WebhookService: send webhook event with strict timeout
+    note right of WebhookService: Lark calls pass through local token bucket\nrpm = 80, burst = 4
     WebhookService->LarkTeam: send Lark webhook
     alt transient webhook failure
       WebhookService->WebhookService: retry with backoff\nup to 3 RPC attempts
@@ -357,24 +362,25 @@ loop select and send one webhook event at a time
 
     alt webhook accepted
       LarkTeam-->WebhookService: accepted
-      WebhookService-->RadarWorker: accepted
-      RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = sent\nincrement attempt_count
-      RadarWorker->SharedDB: commit
+      WebhookService-->WebhookThreadPool: accepted
+      WebhookThreadPool->SharedDB: begin short transaction
+      WebhookThreadPool->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
+      WebhookThreadPool->SharedDB: commit
     else webhook failed or timed out
       LarkTeam-->WebhookService: failure
-      WebhookService-->RadarWorker: failure
-      RadarWorker->SharedDB: begin short transaction
-      RadarWorker->SharedDB: set status = failed\nincrement attempt_count
-      RadarWorker->SharedDB: commit
+      WebhookService-->WebhookThreadPool: failure
+      WebhookThreadPool->SharedDB: begin short transaction
+      WebhookThreadPool->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
+      WebhookThreadPool->SharedDB: commit
     end
   end
+  WebhookThreadPool-->RadarWorker: all submitted event tasks finished
 end
 ```
 
 ## 8. Policy Impact Review Flow
 
-这张图描述 reviewer 如何查看、编辑、保存、approve policy impact。Approve 只推进审核状态；后续 user actions 和邮件由周期任务处理。
+这张图描述 reviewer 如何查看、编辑、保存、approve policy impact。Approve 只推进审核状态；user actions 和邮件由周期任务处理。
 
 ```text
 title 8. Policy Impact Review Flow
@@ -386,7 +392,7 @@ participant SharedDB
 participant PolicyImpactBlackBox
 
 Reviewer->ReviewUI: open review page
-ReviewUI->ClassificationBackend: GET /review/policy-impacts/{policy_update_id}
+ReviewUI->ClassificationBackend: GET /api/compliance-radar/review/policy-impacts/{policy_update_id}
 note right of ClassificationBackend: All review endpoints require existing admin/internal auth
 ClassificationBackend->SharedDB: load policy update
 SharedDB-->ClassificationBackend: policy update
@@ -396,8 +402,8 @@ ClassificationBackend-->ReviewUI: policy update + policy_impact
 
 opt reviewer edits policy impact
   Reviewer->ReviewUI: edit and save policy impact
-  ReviewUI->ClassificationBackend: PUT /review/policy-impacts/{policy_update_id}
-  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
+  ReviewUI->ClassificationBackend: PUT /api/compliance-radar/review/policy-impacts/{policy_update_id}
+  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = confirm_needed
   ClassificationBackend->PolicyImpactBlackBox: validate_policy_impact(policy_update_id, policy_impact)
   PolicyImpactBlackBox-->ClassificationBackend: {success, message}
 
@@ -410,8 +416,8 @@ opt reviewer edits policy impact
 end
 
 alt reviewer approves
-  ReviewUI->ClassificationBackend: POST /review/policy-impacts/{policy_update_id}/approve
-  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = pending
+  ReviewUI->ClassificationBackend: POST /api/compliance-radar/review/policy-impacts/{policy_update_id}/approve
+  ClassificationBackend->SharedDB: verify policy_extract_status = succeeded\nand policy_review_status = confirm_needed
   ClassificationBackend->PolicyImpactBlackBox: validate_policy_impact(policy_update_id)
   PolicyImpactBlackBox-->ClassificationBackend: {success, message}
 
@@ -534,7 +540,7 @@ else token found
   ClassificationBackend-->Frontend: success or already handled
 end
 
-note right of RadarWorker: Existing sent deliveries remain historical records\nFuture deliveries only use active recipients\nUnsubscribed/deleted pending deliveries are not sent
+note right of RadarWorker: Existing sent deliveries remain historical records\nFuture deliveries only use active recipients\nUnsubscribed/deleted pending deliveries are marked skipped by Stage 5
 ```
 
 ## 11. Action execution boundary

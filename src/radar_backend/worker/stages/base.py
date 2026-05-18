@@ -8,8 +8,7 @@ from radar_backend.worker.context import WorkerContext
 
 @dataclass(frozen=True)
 class StageResult:
-    stage_name: str
-    processed_count: int = 0
+    pass
 
 
 class WorkerStage(Protocol):

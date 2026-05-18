@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from radar_backend.config import Settings, load_dotenv
+from radar_backend import config
 
 
-def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_functions_load_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://example/test")
     monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
     monkeypatch.setenv("LLM_API_KEY", "sk-test")
@@ -16,44 +16,89 @@ def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("POLICY_UPDATE_LLM_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("POLICY_IMPACT_LLM_MODEL", "gpt-4.1")
     monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "60")
-    monkeypatch.setenv("DB_POOL_MIN_SIZE", "1")
-    monkeypatch.setenv("DB_POOL_MAX_SIZE", "3")
-    monkeypatch.setenv("DB_POOL_TIMEOUT_SECONDS", "4.5")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("LARK_WEBHOOK_URL", " https://example.test/lark ")
+    monkeypatch.setenv("FRONTEND_BASE_URL", "https://example.test/app/")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("SMTP_PORT", "2525")
+    monkeypatch.setenv("SMTP_USERNAME", "sender@example.test")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret value")
+    monkeypatch.setenv("SMTP_USE_TLS", "false")
+    monkeypatch.setenv("FROM_EMAIL", "sender@example.test")
+    monkeypatch.setenv("FROM_NAME", "Gingercontrol")
 
-    settings = Settings.from_env()
+    assert config.database_dsn_radar() == "postgresql://example/test"
+    assert config.source_config_path() == "/etc/radar/sources.yaml"
+    assert config.llm_api_key() == "sk-test"
+    assert config.anthropic_api_key() == ""
+    assert config.llm_provider() == "openai"
+    assert config.llm_model() == "gpt-4o"
+    assert config.policy_update_llm_model() == "gpt-4o-mini"
+    assert config.policy_impact_llm_model() == "gpt-4.1"
+    assert config.worker_poll_interval_seconds() == 60
+    assert config.log_level() == "DEBUG"
+    assert config.lark_webhook_url() == "https://example.test/lark"
+    assert config.frontend_base_url() == "https://example.test/app"
+    assert config.smtp_host() == "smtp.example.test"
+    assert config.smtp_port() == 2525
+    assert config.smtp_username() == "sender@example.test"
+    assert config.smtp_password() == "secret value"
+    assert config.smtp_use_tls() is False
+    assert config.from_email() == "sender@example.test"
+    assert config.from_name() == "Gingercontrol"
 
-    assert settings.database_dsn_radar == "postgresql://example/test"
-    assert settings.source_config_path == "/etc/radar/sources.yaml"
-    assert settings.llm_api_key == "sk-test"
-    assert settings.llm_provider == "openai"
-    assert settings.llm_model == "gpt-4o"
-    assert settings.policy_update_llm_model == "gpt-4o-mini"
-    assert settings.policy_impact_llm_model == "gpt-4.1"
-    assert settings.worker_poll_interval_seconds == 60
-    assert settings.db_pool_min_size == 1
-    assert settings.db_pool_max_size == 3
-    assert settings.db_pool_timeout_seconds == 4.5
-    assert settings.log_level == "DEBUG"
 
-
-def test_settings_requires_database_dsn_radar(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_database_dsn_radar_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_DSN_RADAR", raising=False)
 
     with pytest.raises(ValueError, match="DATABASE_DSN_RADAR is required"):
-        Settings.from_env()
+        config.database_dsn_radar()
 
 
-def test_settings_rejects_invalid_log_level() -> None:
-    settings = Settings(
-        database_dsn_radar="postgresql://example/test",
-        source_config_path="/etc/radar/sources.yaml",
-        llm_api_key="sk-test",
-        log_level="LOUD",
-    )
+def test_llm_provider_and_model_default_when_unset_or_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    assert config.llm_provider() == "openai"
+    assert config.llm_model() == "gpt-4o"
+
+    monkeypatch.setenv("LLM_PROVIDER", " ")
+    monkeypatch.setenv("LLM_MODEL", "")
+
+    assert config.llm_provider() == "openai"
+    assert config.llm_model() == "gpt-4o"
+
+
+def test_log_level_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOG_LEVEL", "LOUD")
 
     with pytest.raises(ValueError, match="LOG_LEVEL"):
-        settings.validate()
+        config.log_level()
+
+
+def test_worker_poll_interval_rejects_non_positive_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "0")
+
+    with pytest.raises(ValueError, match="WORKER_POLL_INTERVAL_SECONDS"):
+        config.worker_poll_interval_seconds()
+
+
+def test_smtp_use_tls_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SMTP_USE_TLS", "maybe")
+
+    with pytest.raises(ValueError, match="SMTP_USE_TLS"):
+        config.smtp_use_tls()
+
+
+def test_smtp_port_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SMTP_PORT", raising=False)
+
+    with pytest.raises(ValueError, match="SMTP_PORT is required"):
+        config.smtp_port()
 
 
 def test_load_dotenv_does_not_override_existing_env(
@@ -67,22 +112,7 @@ def test_load_dotenv_does_not_override_existing_env(
     monkeypatch.setenv("LLM_API_KEY", "sk-test")
     monkeypatch.delenv("LOG_LEVEL", raising=False)
 
-    load_dotenv(env_file)
+    config.load_dotenv(env_file)
 
-    assert Settings.from_env().database_dsn_radar == "postgresql://from-env/db"
-    assert Settings.from_env().log_level == "DEBUG"
-
-
-def test_settings_uses_production_pool_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://example/test")
-    monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
-    monkeypatch.setenv("LLM_API_KEY", "sk-test")
-    monkeypatch.delenv("DB_POOL_MIN_SIZE", raising=False)
-    monkeypatch.delenv("DB_POOL_MAX_SIZE", raising=False)
-    monkeypatch.delenv("DB_POOL_TIMEOUT_SECONDS", raising=False)
-
-    settings = Settings.from_env()
-
-    assert settings.db_pool_min_size == 10
-    assert settings.db_pool_max_size == 50
-    assert settings.db_pool_timeout_seconds == 60
+    assert config.database_dsn_radar() == "postgresql://from-env/db"
+    assert config.log_level() == "DEBUG"

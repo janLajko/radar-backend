@@ -1,43 +1,26 @@
-from __future__ import annotations
+from radar_backend.db.repositories.email_deliveries_repository import (
+    EmailDeliveriesRepository,
+)
+from radar_backend.db.repositories.notification_recipients_repository import (
+    NotificationRecipientsRepository,
+)
+from radar_backend.db.repositories.policy_updates_repository import PolicyUpdatesRepository
+from radar_backend.db.repositories.raw_source_items_repository import RawSourceItemsRepository
+from radar_backend.db.repositories.user_actions_repository import UserActionsRepository
+from radar_backend.db.repositories.webhook_events_repository import WebhookEventsRepository
 
-from dataclasses import dataclass
-
-from radar_backend.db.connection import Database
-from radar_backend.db.repositories.email_deliveries import EmailDeliveriesRepository
-from radar_backend.db.repositories.notification_recipients import NotificationRecipientsRepository
-from radar_backend.db.repositories.policy_updates import PolicyUpdatesRepository
-from radar_backend.db.repositories.raw_source_items import RawSourceItemsRepository
-from radar_backend.db.repositories.user_actions import UserActionsRepository
-from radar_backend.db.repositories.webhook_events import WebhookEventsRepository
-
-
-@dataclass(frozen=True)
-class Repositories:
-    raw_source_items: RawSourceItemsRepository
-    policy_updates: PolicyUpdatesRepository
-    user_actions: UserActionsRepository
-    notification_recipients: NotificationRecipientsRepository
-    email_deliveries: EmailDeliveriesRepository
-    webhook_events: WebhookEventsRepository
-
-    @classmethod
-    def create(cls, db: Database) -> "Repositories":
-        return cls(
-            raw_source_items=RawSourceItemsRepository(db),
-            policy_updates=PolicyUpdatesRepository(db),
-            user_actions=UserActionsRepository(db),
-            notification_recipients=NotificationRecipientsRepository(db),
-            email_deliveries=EmailDeliveriesRepository(db),
-            webhook_events=WebhookEventsRepository(db),
-        )
-
+email_deliveries_repository = EmailDeliveriesRepository()
+notification_recipients_repository = NotificationRecipientsRepository()
+policy_updates_repository = PolicyUpdatesRepository()
+raw_source_items_repository = RawSourceItemsRepository()
+user_actions_repository = UserActionsRepository()
+webhook_events_repository = WebhookEventsRepository()
 
 __all__ = [
-    "EmailDeliveriesRepository",
-    "NotificationRecipientsRepository",
-    "PolicyUpdatesRepository",
-    "RawSourceItemsRepository",
-    "Repositories",
-    "UserActionsRepository",
-    "WebhookEventsRepository",
+    "email_deliveries_repository",
+    "notification_recipients_repository",
+    "policy_updates_repository",
+    "raw_source_items_repository",
+    "user_actions_repository",
+    "webhook_events_repository",
 ]
