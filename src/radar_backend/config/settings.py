@@ -42,6 +42,50 @@ def lark_webhook_url() -> str:
     return os.getenv("LARK_WEBHOOK_URL", "").strip()
 
 
+def frontend_base_url() -> str:
+    return _required("FRONTEND_BASE_URL").rstrip("/")
+
+
+def smtp_host() -> str:
+    return _required("SMTP_HOST")
+
+
+def smtp_port() -> int:
+    raw_value = _required("SMTP_PORT")
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("SMTP_PORT must be an integer") from exc
+    if value <= 0:
+        raise ValueError("SMTP_PORT must be positive")
+    return value
+
+
+def smtp_username() -> str:
+    return _required("SMTP_USERNAME")
+
+
+def smtp_password() -> str:
+    return _required("SMTP_PASSWORD")
+
+
+def smtp_use_tls() -> bool:
+    value = os.getenv("SMTP_USE_TLS", "true").strip().lower()
+    if value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if value in {"false", "0", "no", "n", "off"}:
+        return False
+    raise ValueError("SMTP_USE_TLS must be true or false")
+
+
+def from_email() -> str:
+    return _required("FROM_EMAIL")
+
+
+def from_name() -> str:
+    return _required("FROM_NAME")
+
+
 def _required(name: str) -> str:
     value = os.getenv(name)
     if value is None or not value.strip():

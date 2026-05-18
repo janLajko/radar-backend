@@ -22,7 +22,7 @@ from radar_backend.domain.enums import (
 class AffectedProduct(TypedDict):
     product_uid: str
     product_name: str
-    hts_code: str | None
+    hts_code: str
     suggested_actions: list[ActionType]
 
 
@@ -32,8 +32,26 @@ class ActionItem(TypedDict):
     status: ActionItemStatus
 
 
+class EmailAffectedProduct(TypedDict, total=False):
+    product_name: str
+    hts_code: str
+
+
+class EmailActionSummary(TypedDict, total=False):
+    action_type: ActionType
+    product_count: int
+    effective_date: str | None
+
+
 class EmailDeliveryPayload(TypedDict, total=False):
-    pass
+    account_owner_email: str
+    source_label: str
+    reference_number: str | None
+    headline: str
+    summary: str
+    source_url: str
+    affected_products: list[EmailAffectedProduct]
+    action_summaries: list[EmailActionSummary]
 
 
 class PolicyImpactReadyForReviewPayload(TypedDict, total=False):
@@ -45,9 +63,13 @@ class PolicyImpactReadyForReviewPayload(TypedDict, total=False):
 
 class AttemptExhaustedPayload(TypedDict, total=False):
     reason: str
-    headline: str
     source_label: str
     reference_number: str | None
+    headline: str
+    recipient_id: int
+    recipient_email: str
+    user_action_id: int
+    stage: str
 
 
 type WebhookPayload = PolicyImpactReadyForReviewPayload | AttemptExhaustedPayload

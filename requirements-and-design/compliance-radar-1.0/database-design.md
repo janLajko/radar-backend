@@ -341,7 +341,7 @@ ON radar_user_actions (user_id, status, created_at DESC);
     {
       "product_uid": "string",
       "product_name": "string",
-      "hts_code": "string | null",
+      "hts_code": "string",
       "suggested_actions": ["reclassify_product", "recalculate_tariff"]
     }
   ],
@@ -407,7 +407,7 @@ ON radar_notification_recipients (user_id, status);
 
 ### 5.5 `radar_email_deliveries`
 
-保存每封 Impact Action 邮件的发送记录。发送由单实例 worker 串行处理，不使用数据库抢锁。
+保存每封 Impact Action 邮件的发送记录。发送由单实例 worker 的 Stage 5 处理；Stage 5 可使用有界、per-cycle sender thread pool，但不使用数据库抢锁或 lease。
 
 创建 delivery 时只针对当时 `active` 的 recipients。`unsubscribed/deleted` recipients 不进入 delivery 表；如果 delivery 创建后 recipient 状态变化，发送前再次检查并把未发送 delivery 标记为 `skipped`。
 
@@ -455,7 +455,8 @@ LIMIT :limit
 说明：
 
 - 不存 `last_error`。
-- delivery 创建时写入邮件发送 payload 快照；Stage 5 发送邮件时不重新拼装邮件内容。
+- delivery 创建时写入邮件发送业务 payload 快照；Stage 5 发送邮件时不回查非 email 业务表。
+- frontend links 不存入 payload，由 Stage 5 发送时基于稳定 id/token 和 frontend 配置渲染。
 - 发送前重新检查 recipient 是否 active。
 - 如果 recipient 已 unsubscribed/deleted，未发送 delivery 标记为 `skipped`，不递增 `attempt_count`，不设置 `last_attempt_at/sent_at`。
 - Email Provider 调用通过 `EmailService` 在事务外发生；发送结果、`attempt_count` 递增和 `last_attempt_at` 放在同一个短事务中写回。

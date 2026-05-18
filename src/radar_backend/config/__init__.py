@@ -1,15 +1,31 @@
 from radar_backend.config.settings import (
     database_dsn_radar,
+    frontend_base_url,
+    from_email,
+    from_name,
     lark_webhook_url,
     load_dotenv,
     log_level,
+    smtp_host,
+    smtp_password,
+    smtp_port,
+    smtp_use_tls,
+    smtp_username,
     worker_poll_interval_seconds,
 )
 
 __all__ = [
     "database_dsn_radar",
+    "frontend_base_url",
+    "from_email",
+    "from_name",
     "lark_webhook_url",
     "load_dotenv",
     "log_level",
+    "smtp_host",
+    "smtp_password",
+    "smtp_port",
+    "smtp_use_tls",
+    "smtp_username",
     "worker_poll_interval_seconds",
 ]

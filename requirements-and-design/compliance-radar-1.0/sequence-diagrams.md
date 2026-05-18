@@ -273,12 +273,13 @@ title 6. Stage 5 - Send Action Notification Emails
 participant Scheduler
 participant RadarWorker
 participant SharedDB
+participant EmailThreadPool
 participant EmailService
 participant EmailProvider
 
 Scheduler->RadarWorker: run_periodic_cycle()
 RadarWorker->RadarWorker: Stage 5. Send action notification emails
-note right of RadarWorker: send_action_notifications() loads a batch of deliveries\nEach delivery is handled serially and checks latest recipient status
+note right of RadarWorker: send_action_notifications() loads up to N deliveries\nDeliveries are processed by a per-cycle thread pool\nEach delivery writes back independently
 note right of RadarWorker: Recipient checks are best-effort\nA same-moment unsubscribe race may still send once
 
 RadarWorker->SharedDB: select email deliveries\nstatus in pending/failed\nattempt_count < 3\nlimit N
@@ -286,17 +287,18 @@ RadarWorker->SharedDB: select email deliveries\nstatus in pending/failed\nattemp
 alt no deliveries selected
     RadarWorker->RadarWorker: stop email stage
 else deliveries selected
-  loop each selected delivery
-    RadarWorker->SharedDB: begin short transaction
-    RadarWorker->SharedDB: load recipient
+  RadarWorker->EmailThreadPool: submit selected deliveries
+  par each selected delivery
+    EmailThreadPool->SharedDB: begin short transaction
+    EmailThreadPool->SharedDB: load recipient
 
     alt recipient is not active
-      RadarWorker->SharedDB: set status = skipped
-      RadarWorker->SharedDB: commit
+      EmailThreadPool->SharedDB: set status = skipped
+      EmailThreadPool->SharedDB: commit
     else recipient is active
-      RadarWorker->SharedDB: commit
+      EmailThreadPool->SharedDB: commit
 
-      RadarWorker->EmailService: send email with delivery payload\nand strict timeout
+      EmailThreadPool->EmailService: send email with delivery payload\nand strict timeout
       EmailService->EmailProvider: send email
       alt transient provider failure
         EmailService->EmailService: retry with backoff\nup to 3 RPC attempts
@@ -304,22 +306,23 @@ else deliveries selected
 
       alt provider accepted
         EmailProvider-->EmailService: accepted
-        EmailService-->RadarWorker: accepted
-        RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
-        RadarWorker->SharedDB: commit
+        EmailService-->EmailThreadPool: accepted
+        EmailThreadPool->SharedDB: begin short transaction
+        EmailThreadPool->SharedDB: set status = sent\nincrement attempt_count\nset last_attempt_at and sent_at
+        EmailThreadPool->SharedDB: commit
       else provider failed or timed out
         EmailProvider-->EmailService: failure
-        EmailService-->RadarWorker: failure
-        RadarWorker->SharedDB: begin short transaction
-        RadarWorker->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
+        EmailService-->EmailThreadPool: failure
+        EmailThreadPool->SharedDB: begin short transaction
+        EmailThreadPool->SharedDB: set status = failed\nincrement attempt_count\nset last_attempt_at
         opt new attempt_count reached 3
-          RadarWorker->SharedDB: insert webhook event if absent\nattempt_exhausted for delivery_id
+          EmailThreadPool->SharedDB: insert webhook event if absent\nattempt_exhausted for delivery_id
         end
-        RadarWorker->SharedDB: commit
+        EmailThreadPool->SharedDB: commit
       end
     end
   end
+  EmailThreadPool-->RadarWorker: all delivery tasks completed
 end
 
 note right of RadarWorker: If provider accepted but process crashes before marking sent,\na later retry may send a duplicate.

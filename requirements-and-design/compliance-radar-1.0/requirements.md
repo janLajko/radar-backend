@@ -116,7 +116,7 @@ unique(user_id, policy_update_id)
 {
   "product_uid": "string",
   "product_name": "string",
-  "hts_code": "string | null",
+  "hts_code": "string",
   "suggested_actions": ["reclassify_product", "recalculate_tariff"]
 }
 ```
@@ -202,8 +202,9 @@ run_periodic_cycle():
 - stage 函数只处理自身职责，不在函数尾部驱动下一 stage。
 - 外层编排容器捕获单个 stage 的整体异常，记录日志后继续执行后续 stage。
 - worker loop 外层保留兜底异常捕获，避免非 stage 层错误导致进程退出。
-- 定时任务内部不再启动异步线程。
-- 唯一允许并发的是 Stage 1 内部的 source adapter 并发抓取。
+- 定时任务不启动跨 stage、跨 cycle 的后台线程。
+- Stage 1 内部允许 source adapter 并发抓取。
+- Stage 5 和 Stage 6 内部允许使用有界、per-cycle sender thread pool；stage 返回前必须等待本批任务全部结束。
 - 所有 source 抓取完成并完成 raw item 写入/跳过后，才进入 Stage 2。
 - 任何外部调用都不在数据库事务内，包括 source fetch、PDF 下载、LLM、黑盒函数、CMS、Email Provider 和 Lark webhook。
 - 数据库事务只包本地状态推进和原子写入。
@@ -395,7 +396,7 @@ type UserActionCandidates = {
   affected_products: Array<{
     product_uid: string
     product_name: string
-    hts_code: string | null
+    hts_code: string
     suggested_actions: ActionType[]
   }>
   action_items: Array<{
@@ -731,7 +732,8 @@ LIMIT :limit
 
 - 只发 Impact Action 通知。
 - 一封邮件对应一个 `user_action_id + recipient`。
-- delivery payload 固化发送所需内容，包括 policy headline、source/reference、summary、affected products、action items、View actions 链接、unsubscribe 链接。
+- delivery payload 固化发送所需业务内容，包括 policy headline、source/reference、summary、affected products 和 action summaries。
+- frontend links 不写入 delivery payload；Stage 5 在发送时基于稳定 id/token 和 `FRONTEND_BASE_URL` 渲染 unsubscribe、action deep links、view details 和 monitoring links。
 - 不附带 PDF。
 - 不放完整 original text。
 - 不发送没有 Action 的 Recent Policy Update 邮件。
@@ -859,6 +861,7 @@ Review 页面可以看到 policy update 和 policy impact，并执行保存、ap
 - 主 worker 单实例。
 - 周期任务 stage 串行。
 - Stage 1 source adapters 可以并发，但必须在 Stage 2 前全部完成。
+- Stage 5/6 sender pools 只在当前 stage 内存在，不留下跨周期后台任务。
 - Approve 不启动实时 pipeline，避免与周期任务产生复杂竞态。
 - 唯一键和事务是最终一致性防线。
 - 串行模型不使用数据库抢锁或 lease。

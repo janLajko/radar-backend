@@ -207,19 +207,19 @@ def test_repositories_against_real_database(conn: Connection) -> None:
         conn,
         user_action_id=user_action_id,
         recipient_id=active_recipient_id,
-        payload={"subject": "Action needed"},
+        payload=_email_delivery_payload(suffix),
     )
     assert email_delivery_id is not None
     assert email_deliveries_repository.create_email_delivery(
         conn,
         user_action_id=user_action_id,
         recipient_id=active_recipient_id,
-        payload={"subject": "Action needed"},
+        payload=_email_delivery_payload(suffix),
     ) is None
 
     email_delivery = email_deliveries_repository.get_by_id(conn, id=email_delivery_id)
     assert email_delivery is not None
-    assert email_delivery["payload"] == {"subject": "Action needed"}
+    assert email_delivery["payload"] == _email_delivery_payload(suffix)
     assert email_delivery["status"] is EmailDeliveryStatus.PENDING
     assert email_delivery["attempt_count"] == 0
 
@@ -416,6 +416,30 @@ def _insert_policy_update(
     ).fetchone()
     assert row is not None
     return row[0]
+
+
+def _email_delivery_payload(suffix: str):
+    return {
+        "account_owner_email": "owner@example.test",
+        "source_label": "USTR",
+        "reference_number": f"USTR-{suffix[:8]}",
+        "headline": "Section 301 exclusion window reopens",
+        "summary": "USTR announced a new exclusion window.",
+        "source_url": "https://example.test/source",
+        "affected_products": [
+            {
+                "product_name": "Test Product",
+                "hts_code": "1702.60.40.00",
+            }
+        ],
+        "action_summaries": [
+            {
+                "action_type": ActionType.RECLASSIFY_PRODUCT,
+                "product_count": 1,
+                "effective_date": "2026-05-01",
+            }
+        ],
+    }
 
 
 def _insert_raw_source_item(
