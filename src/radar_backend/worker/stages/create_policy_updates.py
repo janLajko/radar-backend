@@ -17,7 +17,10 @@ class CreatePolicyUpdatesStage:
 
     def run(self, context: WorkerContext) -> StageResult:
         repo = context.repositories
-        llm = build_provider(context.settings)
+        llm = build_provider(
+            context.settings,
+            model=context.settings.policy_update_llm_model,
+        )
         http = HttpClient()
         ingested = 0
 
@@ -55,9 +58,10 @@ class CreatePolicyUpdatesStage:
                     PolicyFilterInput(
                         source_key=item.source_key,
                         source_label=item.source_label,
-                        title=item.title,
-                        raw_content=item.raw_content,
+                        source_title=item.source_title,
+                        source_content=item.source_content,
                         attachment_text=attachment_text,
+                        reference_number=item.source_metadata.get("citation"),
                     ),
                 )
             except Exception as exc:
@@ -78,7 +82,7 @@ class CreatePolicyUpdatesStage:
             if not draft.should_ingest:
                 with context.db.transaction() as conn:
                     repo.raw_source_items.set_policy_update_status(
-                        conn, item.id, "discarded", new_count, draft.discard_reason
+                        conn, item.id, "discarded", new_count
                     )
                 logger.info(
                     "create_policy_updates: discarded item_id=%s reason=%s",

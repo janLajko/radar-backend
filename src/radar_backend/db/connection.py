@@ -22,6 +22,10 @@ class Database:
             min_size=self.settings.db_pool_min_size,
             max_size=self.settings.db_pool_max_size,
             timeout=self.settings.db_pool_timeout_seconds,
+            max_idle=60,
+            max_lifetime=1800,
+            reconnect_timeout=60,
+            check=ConnectionPool.check_connection,
             open=False,
         )
 

@@ -13,6 +13,8 @@ def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("LLM_API_KEY", "sk-test")
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("LLM_MODEL", "gpt-4o")
+    monkeypatch.setenv("POLICY_UPDATE_LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("POLICY_IMPACT_LLM_MODEL", "gpt-4.1")
     monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("DB_POOL_MIN_SIZE", "1")
     monkeypatch.setenv("DB_POOL_MAX_SIZE", "3")
@@ -26,6 +28,8 @@ def test_settings_loads_required_values(monkeypatch: pytest.MonkeyPatch) -> None
     assert settings.llm_api_key == "sk-test"
     assert settings.llm_provider == "openai"
     assert settings.llm_model == "gpt-4o"
+    assert settings.policy_update_llm_model == "gpt-4o-mini"
+    assert settings.policy_impact_llm_model == "gpt-4.1"
     assert settings.worker_poll_interval_seconds == 60
     assert settings.db_pool_min_size == 1
     assert settings.db_pool_max_size == 3

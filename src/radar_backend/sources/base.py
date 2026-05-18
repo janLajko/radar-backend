@@ -12,10 +12,10 @@ if TYPE_CHECKING:
 class RawSourceItemCandidate:
     source_item_key: str
     source_url: str
-    title: str
+    source_title: str
     published_at: datetime | None
-    raw_content: str
-    raw_metadata: dict
+    source_content: str
+    source_metadata: dict
     pdf_urls: list[str]
 
 

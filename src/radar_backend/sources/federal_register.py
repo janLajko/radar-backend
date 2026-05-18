@@ -16,6 +16,7 @@ _DEFAULT_AGENCIES = [
 
 _FIELDS = [
     "document_number",
+    "citation",
     "title",
     "abstract",
     "html_url",
@@ -83,17 +84,22 @@ def _map_result(item: dict) -> RawSourceItemCandidate | None:
         a.get("name", "") for a in item.get("agencies", []) if a.get("name")
     ]
     docket_ids: list[str] = item.get("docket_ids") or []
+    citation: str | None = item.get("citation") or None
+
+    source_metadata: dict = {
+        "document_number": document_number,
+        "agencies": agency_names,
+        "docket_ids": docket_ids,
+    }
+    if citation:
+        source_metadata["citation"] = citation
 
     return RawSourceItemCandidate(
         source_item_key=document_number,
         source_url=html_url,
-        title=title,
+        source_title=title,
         published_at=published_at,
-        raw_content=raw_content,
-        raw_metadata={
-            "document_number": document_number,
-            "agencies": agency_names,
-            "docket_ids": docket_ids,
-        },
+        source_content=raw_content,
+        source_metadata=source_metadata,
         pdf_urls=pdf_urls,
     )

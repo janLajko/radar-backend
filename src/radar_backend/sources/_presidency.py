@@ -85,19 +85,19 @@ def _fetch_detail(
 
     title = _extract_title(soup)
     published_at = _extract_date(soup)
-    raw_content = _extract_body(soup)
+    source_content = _extract_body(soup)
     pdf_urls = _extract_pdf_urls(soup, url)
-    raw_metadata: dict = {"slug": slug}
+    source_metadata: dict = {"slug": slug}
     if published_at:
-        raw_metadata["published_date"] = published_at.date().isoformat()
+        source_metadata["published_date"] = published_at.date().isoformat()
 
     return RawSourceItemCandidate(
         source_item_key=slug,
         source_url=url,
-        title=title,
+        source_title=title,
         published_at=published_at,
-        raw_content=raw_content,
-        raw_metadata=raw_metadata,
+        source_content=source_content,
+        source_metadata=source_metadata,
         pdf_urls=pdf_urls,
     )
 

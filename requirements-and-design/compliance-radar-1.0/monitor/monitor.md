@@ -249,3 +249,131 @@ CREATE TABLE radar_policy_updates (
 | `pending` | 尚未计算 user actions | 是，若 review approved 且 `action_calculate_attempt_count < 3` |
 | `succeeded` | user actions 已成功计算并落库 | 否 |
 | `failed` | user actions 计算失败 | 是，若 review approved 且 `action_calculate_attempt_count < 3` |
+
+
+stage3 table:
+```sql
+CREATE TABLE radar_policy_impacts (
+    id             bigserial PRIMARY KEY,
+    policy_update_id        bigint      NOT NULL,
+    hts_number     text        NOT NULL,
+    impacted_type    text        NOT NULL,  -- deleted | inserted | measure_changed | desc_changed | rate_changed
+    effective_time date,                  -- 变更生效日期（来自 measure.effective_start_date 或 HTS 变更日期）
+    coos           text[],               -- 受影响原产国列表，仅 measure_changed 时有值，其他为 null
+    row_desc text NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_hts_affected_hts_number ON radar_policy_impacts (hts_number);
+CREATE INDEX idx_hts_affected_news_id    ON radar_policy_impacts (policy_update_id);
+```
+
+stage3 sequece:
+```text
+title 4. Stage 3 - Create Policy Impacts for Review
+
+participant Scheduler
+participant RadarWorker
+participant SharedDB
+participant PolicyImpactBlackBox
+
+Scheduler->RadarWorker: run_periodic_cycle()
+RadarWorker->RadarWorker: Stage 3. Create policy impacts for review
+note right of RadarWorker: create_policy_impacts() evaluates and persists structured impact data\nIt does not approve the result
+
+RadarWorker->SharedDB: select policy updates\npolicy_extract_status in pending/failed\npolicy_extract_attempt_count < 3
+
+loop each selected policy update
+  RadarWorker->PolicyImpactBlackBox: extract_policy_impact(policy_update_id)
+  PolicyImpactBlackBox->SharedDB: read radar_policy_updates
+  PolicyImpactBlackBox->PolicyImpactBlackBox: evaluate policy scope, affected HTS, and tariff implications
+  PolicyImpactBlackBox->SharedDB: persist policy impact in black-box tables
+  PolicyImpactBlackBox-->RadarWorker: true / false
+
+  alt extract succeeded
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set policy_extract_status = succeeded\nincrement policy_extract_attempt_count
+    RadarWorker->SharedDB: upsert radar_webhook_events\npolicy_impact_ready_for_review for policy_update_id
+    RadarWorker->SharedDB: commit
+  else extract failed
+    RadarWorker->SharedDB: begin short transaction
+    RadarWorker->SharedDB: set policy_extract_status = failed\nincrement policy_extract_attempt_count
+    opt new policy_extract_attempt_count reached 3
+      RadarWorker->SharedDB: upsert radar_webhook_events\nattempt_exhausted for policy_update_id
+    end
+    RadarWorker->SharedDB: commit
+  end
+end
+
+RadarWorker->RadarWorker: Stage 3 completed
+```
+
+stage 3 output.json
+```json
+{
+    "source": {
+        "type": "proclamation",
+        "id": "10107",
+        "url": "https://www.presidency.ucsb.edu/documents/proclamation-10107-...",
+        "detected_at": "2026-05-07"
+    },
+    "hts_modifications": [
+        {
+            "deleted": [
+                "9903.78.01",
+                "9903.81.87",
+                "9903.81.88",
+                "9903.81.89",
+                "9903.81.90",
+                "9903.81.91",
+                "9903.81.93",
+                "9903.85.02",
+                "9903.85.04",
+                "9903.85.07",
+                "9903.85.08"
+            ],
+            "inserted": [
+                "9903.82.02",
+                "7219.14.00.90"
+            ]
+        }
+    ],
+    "measures": [
+        {
+            "heading": "7219.14.00.90",
+            "description": "Other",
+            "unit_of_quantity": ["No."],
+            "general_rate_of_duty": "20%",
+            "special_rate_of_duty": "Free",
+            "column_2_rate_of_duty": "45%",
+            "quota_quantity": null,
+            "additional_duties": null
+        },
+        {
+            "heading": "9903.82.02",
+            "note": 16,
+            "description": "Except as provided for in headings 9903.82.14, 9903.85.67 and 9903.85.68, articles of aluminum, of steel or of copper and derivative aluminum or steel articles, as provided for in subdivisions (c)(i)-(v) of U.S. note 16",
+            "ad_valorem_rate": 50.0,
+            "value_basis": "CIF",
+            "country_iso2": null,
+            "melt_pour_origin_iso2": null,
+            "is_potential": false,
+            "effective_start_date": "2026-04-06",
+            "excludes_headings": [
+                "9903.82.14",
+                "9903.85.67",
+                "9903.85.68"
+            ],
+            "includes_headings": [
+                "7601",
+                "7604",
+                "7605",
+                "7606",
+                "7607",
+                "7608"
+            ]
+        }
+    ]
+}
+```

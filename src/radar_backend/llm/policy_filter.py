@@ -7,41 +7,50 @@ from dataclasses import dataclass
 from radar_backend.llm.provider import LLMProvider
 
 _SYSTEM_PROMPT = """\
-你是一个贸易合规分析师。判断以下政府文件是否应进入"近期政策更新"feed。
+You are a trade compliance analyst. Determine whether the following government document should be ingested into the "recent policy updates" feed.
 
-## 应 ingest 的条件（满足任意一条）
-- 调整进口关税税率（加征、豁免、暂停、阶段性变化）
-- 变更特定 HTS code 的分类规则
-- 修改 de minimis 免税门槛或适用范围
-- 新增或修改进口配额、许可证、合规要求
-- 修订、延期或撤销已有关税措施
+## Ingest if ANY of the following apply
+These must be POLICY CHANGES that alter the rules or rates applicable to importers — not routine administrative determinations:
+- Establishes, adjusts, suspends, or revokes import tariff rates applicable to HTS codes (e.g. new Section 301/232 tariffs, tariff exemptions, quota-based rate changes)
+- Changes HTS code classification rules or schedules
+- Modifies de minimis thresholds or scope
+- Creates or modifies import quotas, tariff-rate quotas (TRQs), licenses, or compliance requirements
+- Establishes new procedures for importers to obtain tariff exemptions, exclusions, or adjustments
+- Amends, extends, or terminates existing trade remedy measures (safeguards, Section 201/301/232) at the policy level
 
-## 应 discard 的条件
-- 纯仪式性公告（节日、纪念日、荣誉表彰）
-- 不涉及货物进口的行政令（移民、国防、人事、国内政策）
-- 与贸易合规无关的程序性通知（内部组织变更、人员任命）
-- HTS change record 中 Source 字段为 "PP xxxxx"、"Executive Order" 或 "Notice" 的条目（这些已由其他数据源覆盖，无需重复处理）
+## Discard if ANY of the following apply
+- Antidumping (AD) or countervailing duty (CVD) administrative review results — these determine duty rates for specific foreign producers for a past review period; they do not change the tariff structure or HTS applicability
+- Purely ceremonial proclamations (holidays, commemorations, honorary designations)
+- Executive orders unrelated to goods imports (immigration, defense, personnel, domestic policy)
+- Procedural notices unrelated to trade compliance (internal reorganizations, appointments)
+- Scope rulings, circumvention findings, or other case-specific AD/CVD determinations that apply only to named companies or products already under an existing order
+- HTS change record entries where the Source field is "PP xxxxx", "Executive Order", or "Notice" (already covered by other data sources)
 
-## 输出格式
-严格输出如下 JSON，包裹在 <json></json> 标签中，不输出任何其他内容：
+## reference_number format by source
+- Federal Register Notice: Federal Register citation, e.g. "91 FR 27248"
+- Presidential Proclamation: e.g. "Proclamation 11027"
+- Executive Order: e.g. "Executive Order 14384"
+- HTS Archive: archive ID, e.g. "2026HTSBasic"
+- If not determinable: null
+
+## Output format
+Output ONLY the following JSON wrapped in <json></json> tags, with no other content:
 
 <json>
 {
   "should_ingest": true,
   "discard_reason": null,
-  "reference_number": "Proclamation 11002",
-  "headline": "简短标题（一句话）",
-  "summary": "2-4 句摘要，说明政策内容和影响范围",
-  "briefing_markdown": "## 政策背景\\n...\\n## 主要内容\\n...\\n## 对进口商的影响\\n...",
+  "headline": "One-sentence title",
+  "summary": "2-4 sentence summary of the policy and its scope",
+  "briefing": "## Background\\n...\\n## Key Provisions\\n...\\n## Impact on Importers\\n...",
   "effective_date": "2025-02-04"
 }
 </json>
 
-规则：
-- should_ingest=true 时，headline、summary、briefing_markdown 必须非空
-- should_ingest=false 时，discard_reason 必须非空，headline/summary/briefing_markdown 可为空字符串
-- effective_date 格式为 YYYY-MM-DD，无法确定时为 null
-- 所有文字内容用中文输出
+Rules:
+- When should_ingest=true, headline, summary, and briefing must be non-empty
+- When should_ingest=false, discard_reason must be non-empty; headline/summary/briefing may be empty strings
+- effective_date format: YYYY-MM-DD; use null if not determinable
 """
 
 _JSON_RE = re.compile(r"<json>\s*(.*?)\s*</json>", re.DOTALL)
@@ -51,9 +60,10 @@ _JSON_RE = re.compile(r"<json>\s*(.*?)\s*</json>", re.DOTALL)
 class PolicyFilterInput:
     source_key: str
     source_label: str
-    title: str
-    raw_content: str
+    source_title: str
+    source_content: str
     attachment_text: str  # empty string when no PDFs
+    reference_number: str | None = None  # pre-known citation; LLM should use as-is
 
 
 @dataclass(frozen=True)
@@ -63,7 +73,7 @@ class PolicyUpdateDraft:
     reference_number: str | None
     headline: str
     summary: str
-    briefing_markdown: str
+    briefing: str
     effective_date: str | None
 
 
@@ -83,14 +93,18 @@ def filter_and_generate(
 
 def _build_user_message(input: PolicyFilterInput) -> str:
     parts = [
-        f"数据源：{input.source_label}（{input.source_key}）",
-        f"标题：{input.title}",
+        f"Source: {input.source_label} ({input.source_key})",
+        f"Title: {input.source_title}",
+    ]
+    if input.reference_number:
+        parts.append(f"Reference Number: {input.reference_number} (use this exact value)")
+    parts += [
         "",
-        "## 正文内容",
-        input.raw_content,
+        "## Document Content",
+        input.source_content,
     ]
     if input.attachment_text:
-        parts += ["", "## 附件内容", input.attachment_text]
+        parts += ["", "## Attachment Content", input.attachment_text]
     return "\n".join(parts)
 
 
@@ -107,7 +121,7 @@ def _parse_response(raw: str) -> PolicyUpdateDraft:
     should_ingest = bool(data.get("should_ingest", False))
 
     if should_ingest:
-        for field in ("headline", "summary", "briefing_markdown"):
+        for field in ("headline", "summary", "briefing"):
             if not data.get(field, "").strip():
                 raise ValueError(
                     f"should_ingest=true but {field!r} is empty"
@@ -122,6 +136,6 @@ def _parse_response(raw: str) -> PolicyUpdateDraft:
         reference_number=data.get("reference_number") or None,
         headline=data.get("headline") or "",
         summary=data.get("summary") or "",
-        briefing_markdown=data.get("briefing_markdown") or "",
+        briefing=data.get("briefing") or "",
         effective_date=data.get("effective_date") or None,
     )

@@ -57,10 +57,10 @@ def _parse_archives(soup: BeautifulSoup) -> list[RawSourceItemCandidate]:
             RawSourceItemCandidate(
                 source_item_key=archive_id,
                 source_url=_ARCHIVE_PAGE,
-                title=f"HTS Archive: {archive_id}",
+                source_title=f"HTS Archive: {archive_id}",
                 published_at=published_at,
-                raw_content=f"New HTS archive {archive_id} available.",
-                raw_metadata={
+                source_content=f"New HTS archive {archive_id} available.",
+                source_metadata={
                     "archive_id": archive_id,
                     "change_record_url": change_record_url,
                 },
