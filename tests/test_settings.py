@@ -15,6 +15,7 @@ def test_config_functions_load_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MODEL", "gpt-4o")
     monkeypatch.setenv("POLICY_UPDATE_LLM_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("POLICY_IMPACT_LLM_MODEL", "gpt-4.1")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("LARK_WEBHOOK_URL", " https://example.test/lark ")
