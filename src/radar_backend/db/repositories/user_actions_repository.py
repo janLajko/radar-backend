@@ -108,7 +108,7 @@ class UserActionsRepository:
             {
                 "product_uid": cast(str, product["product_uid"]),
                 "product_name": cast(str, product["product_name"]),
-                "hts_code": cast(str | None, product["hts_code"]),
+                "hts_code": cast(str, product["hts_code"]),
                 "suggested_actions": [
                     ActionType(cast(str, action))
                     for action in cast(list[object], product["suggested_actions"])
