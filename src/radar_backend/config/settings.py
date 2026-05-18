@@ -24,6 +24,34 @@ def database_dsn_radar() -> str:
     return _required("DATABASE_DSN_RADAR")
 
 
+def source_config_path() -> str:
+    return _required("SOURCE_CONFIG_PATH")
+
+
+def llm_api_key() -> str:
+    return _required("LLM_API_KEY")
+
+
+def anthropic_api_key() -> str:
+    return os.getenv("ANTHROPIC_API_KEY", "").strip()
+
+
+def llm_provider() -> str:
+    return _string("LLM_PROVIDER", "openai")
+
+
+def llm_model() -> str:
+    return _string("LLM_MODEL", "gpt-4o")
+
+
+def policy_update_llm_model() -> str | None:
+    return _optional("POLICY_UPDATE_LLM_MODEL")
+
+
+def policy_impact_llm_model() -> str | None:
+    return _optional("POLICY_IMPACT_LLM_MODEL")
+
+
 def worker_poll_interval_seconds() -> int:
     value = _int("WORKER_POLL_INTERVAL_SECONDS", 300)
     if value <= 0:
@@ -93,6 +121,13 @@ def _required(name: str) -> str:
     return value
 
 
+def _optional(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value
+
+
 def _strip_outer_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         return value[1:-1]
@@ -107,3 +142,10 @@ def _int(name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def _string(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()

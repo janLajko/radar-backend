@@ -9,6 +9,12 @@ from radar_backend import config
 
 def test_config_functions_load_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://example/test")
+    monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o")
+    monkeypatch.setenv("POLICY_UPDATE_LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("POLICY_IMPACT_LLM_MODEL", "gpt-4.1")
     monkeypatch.setenv("WORKER_POLL_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("LARK_WEBHOOK_URL", " https://example.test/lark ")
@@ -22,6 +28,13 @@ def test_config_functions_load_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FROM_NAME", "Gingercontrol")
 
     assert config.database_dsn_radar() == "postgresql://example/test"
+    assert config.source_config_path() == "/etc/radar/sources.yaml"
+    assert config.llm_api_key() == "sk-test"
+    assert config.anthropic_api_key() == ""
+    assert config.llm_provider() == "openai"
+    assert config.llm_model() == "gpt-4o"
+    assert config.policy_update_llm_model() == "gpt-4o-mini"
+    assert config.policy_impact_llm_model() == "gpt-4.1"
     assert config.worker_poll_interval_seconds() == 60
     assert config.log_level() == "DEBUG"
     assert config.lark_webhook_url() == "https://example.test/lark"
@@ -40,6 +53,22 @@ def test_database_dsn_radar_is_required(monkeypatch: pytest.MonkeyPatch) -> None
 
     with pytest.raises(ValueError, match="DATABASE_DSN_RADAR is required"):
         config.database_dsn_radar()
+
+
+def test_llm_provider_and_model_default_when_unset_or_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    assert config.llm_provider() == "openai"
+    assert config.llm_model() == "gpt-4o"
+
+    monkeypatch.setenv("LLM_PROVIDER", " ")
+    monkeypatch.setenv("LLM_MODEL", "")
+
+    assert config.llm_provider() == "openai"
+    assert config.llm_model() == "gpt-4o"
 
 
 def test_log_level_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,6 +108,8 @@ def test_load_dotenv_does_not_override_existing_env(
     env_file = tmp_path / ".env"
     env_file.write_text("DATABASE_DSN_RADAR=postgresql://from-file/db\nLOG_LEVEL=DEBUG\n")
     monkeypatch.setenv("DATABASE_DSN_RADAR", "postgresql://from-env/db")
+    monkeypatch.setenv("SOURCE_CONFIG_PATH", "/etc/radar/sources.yaml")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
     monkeypatch.delenv("LOG_LEVEL", raising=False)
 
     config.load_dotenv(env_file)

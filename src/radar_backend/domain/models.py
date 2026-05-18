@@ -59,6 +59,7 @@ class PolicyImpactReadyForReviewPayload(TypedDict, total=False):
     source_label: str
     reference_number: str | None
     review_url: str
+    source_url: str
 
 
 class AttemptExhaustedPayload(TypedDict, total=False):
@@ -66,6 +67,8 @@ class AttemptExhaustedPayload(TypedDict, total=False):
     source_label: str
     reference_number: str | None
     headline: str
+    source_url: str
+    attempt_count: int
     recipient_id: int
     recipient_email: str
     user_action_id: int

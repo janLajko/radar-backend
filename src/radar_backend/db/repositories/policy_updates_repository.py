@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import json
+import re
 from datetime import date, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from psycopg import Connection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from radar_backend.domain import (
     ActionCalculateStatus,
     PolicyExtractStatus,
     PolicyReviewStatus,
+    RawSourceItemModel,
     PolicyUpdateModel,
 )
+
+if TYPE_CHECKING:
+    from radar_backend.llm.policy_filter import PolicyUpdateDraft
 
 _POLICY_UPDATE_COLUMNS = """
 id,
@@ -147,3 +154,103 @@ class PolicyUpdatesRepository:
             "created_at": cast(datetime, row["created_at"]),
             "updated_at": cast(datetime, row["updated_at"]),
         }
+
+    def create_policy_updates(
+        self,
+        conn: Connection,
+        item: RawSourceItemModel,
+        draft: PolicyUpdateDraft,
+    ) -> int:
+        """Insert a new policy update. Returns the new row id."""
+        source_content = re.sub(r"\s{2,}", " ", item["source_content"]).strip()
+
+        effective_date = None
+        if draft.effective_date:
+            try:
+                effective_date = date.fromisoformat(draft.effective_date)
+            except ValueError:
+                effective_date = None
+
+        cur = conn.execute(
+            """
+            INSERT INTO radar_policy_updates (
+                raw_source_item_id, source_key, source_label, source_url,
+                source_title, reference_number, published_at, pdf_urls, source_metadata,
+                headline, summary, briefing, source_content,
+                effective_date,
+                policy_extract_status, policy_review_status, action_calculate_status
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s,
+                'pending', 'confirm_needed', 'pending'
+            )
+            RETURNING id
+            """,
+            (
+                item["id"],
+                item["source_key"],
+                item["source_label"],
+                item["source_url"],
+                item["source_title"],
+                draft.reference_number,
+                item["published_at"],
+                Jsonb(item["pdf_urls"]),
+                Jsonb(item["source_metadata"]),
+                draft.headline,
+                draft.summary,
+                draft.briefing,
+                source_content,
+                effective_date,
+            ),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        return row[0]
+
+    def fetch_pending_for_policy_impact(
+        self, conn: Connection, limit: int = 50
+    ) -> list[PolicyUpdateModel]:
+        """Return policy updates that need impact extraction (pending or failed, <3 attempts)."""
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""
+                SELECT {_POLICY_UPDATE_COLUMNS}
+                FROM radar_policy_updates
+                WHERE policy_extract_status IN ('pending', 'failed')
+                  AND policy_extract_attempt_count < 3
+                ORDER BY id ASC
+                LIMIT %(limit)s
+                """,
+                {"limit": limit},
+            )
+            rows = cur.fetchall()
+
+        return [self._to_model(row) for row in rows]
+
+    def set_policy_extract_status(
+        self,
+        conn: Connection,
+        policy_update_id: int,
+        status: str,
+        new_attempt_count: int,
+        impact_json: dict | None = None,
+    ) -> None:
+        """Update policy_extract_status, attempt count, and optionally impact_json."""
+        conn.execute(
+            """
+            UPDATE radar_policy_updates
+            SET policy_extract_status = %s,
+                policy_extract_attempt_count = %s,
+                impact_json = COALESCE(%s::jsonb, impact_json),
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (
+                status,
+                new_attempt_count,
+                json.dumps(impact_json) if impact_json is not None else None,
+                policy_update_id,
+            ),
+        )

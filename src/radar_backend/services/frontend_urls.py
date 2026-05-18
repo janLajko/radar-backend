@@ -10,6 +10,10 @@ def monitoring_url(user_action_id: int) -> str:
     return f"{_frontend_base_url()}/compliance-radar?{query}"
 
 
+def policy_impact_review_url(policy_update_id: int) -> str:
+    return f"{_frontend_base_url()}/compliance-radar/review/{policy_update_id}"
+
+
 def reclassify_url() -> str:
     query = urlencode({"tab": "compliance_radar_alert"})
     return f"{_frontend_base_url()}/classifier?{query}"
