@@ -63,6 +63,7 @@ CREATE TABLE radar_policy_updates (
   policy_review_status text NOT NULL DEFAULT 'confirm_needed',
   action_calculate_status text NOT NULL DEFAULT 'pending',
   action_calculate_attempt_count integer NOT NULL DEFAULT 0,
+  impact_json jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
@@ -81,11 +82,33 @@ CREATE TABLE radar_policy_updates (
   CONSTRAINT chk_radar_policy_pdf_urls_array
     CHECK (jsonb_typeof(pdf_urls) = 'array'),
   CONSTRAINT chk_radar_policy_source_metadata_object
-    CHECK (jsonb_typeof(source_metadata) = 'object')
+    CHECK (jsonb_typeof(source_metadata) = 'object'),
+  CONSTRAINT chk_radar_policy_impact_json_object
+    CHECK (impact_json IS NULL OR jsonb_typeof(impact_json) = 'object')
 );
 
 CREATE TRIGGER trg_radar_policy_updates_updated_at
 BEFORE UPDATE ON radar_policy_updates
+FOR EACH ROW
+EXECUTE FUNCTION radar_set_updated_at();
+
+CREATE TABLE radar_policy_impacts (
+  id bigserial PRIMARY KEY,
+  policy_update_id bigint NOT NULL,
+  hts_number text NOT NULL,
+  impacted_type text NOT NULL,
+  effective_time date,
+  coos text[],
+  row_desc text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT chk_radar_policy_impacts_impacted_type
+    CHECK (impacted_type IN ('deleted', 'inserted', 'measure_changed', 'desc_changed', 'rate_changed'))
+);
+
+CREATE TRIGGER trg_radar_policy_impacts_updated_at
+BEFORE UPDATE ON radar_policy_impacts
 FOR EACH ROW
 EXECUTE FUNCTION radar_set_updated_at();
 
@@ -209,6 +232,9 @@ ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, cr
 
 CREATE INDEX idx_radar_policy_updates_review_action_calculate_attempt_count
 ON radar_policy_updates (policy_review_status, action_calculate_status, action_calculate_attempt_count, created_at);
+
+CREATE INDEX idx_radar_policy_impacts_policy_update_id
+ON radar_policy_impacts (policy_update_id);
 
 CREATE INDEX idx_radar_user_actions_user_id_status_created_at
 ON radar_user_actions (user_id, status, created_at DESC);
