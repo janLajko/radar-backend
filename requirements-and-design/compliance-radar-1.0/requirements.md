@@ -758,7 +758,7 @@ GET    /api/compliance-radar/unsubscribe/{token}
 - active recipient 数量限制需要由 API 层在同一事务内保证。
 - 已存在 active：409 duplicate。
 - 已存在 unsubscribed：409 unsubscribed，不允许普通添加恢复。
-- 已存在 deleted：可以重新激活为 active，并刷新 token。
+- 已存在 deleted：重新新增同一邮箱会创建新的 active recipient row，并生成新的 token；不复用旧 row。
 
 删除规则：
 
@@ -792,7 +792,7 @@ page_size
 排序：
 
 ```text
-published_at desc nulls last, created_at desc
+created_at desc, id desc
 ```
 
 列表返回 policy update 展示所需字段；详情返回 `briefing`、`source_content`、`pdf_urls` 等详情字段。普通用户 API 不返回内部状态、attempt count 或黑盒 policy impact。

@@ -231,7 +231,7 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 | `source_content` | `text` | 是 |  |  | 来自 raw item `source_content` 的清洗正文，不由 LLM 生成 |
 | `pdf_urls` | `jsonb` | 是 | `'[]'::jsonb` | check array | 附件 PDF URL 列表快照 |
 | `reference_number` | `text` | 否 |  |  | 源站自己的可读编号快照，可为空 |
-| `published_at` | `timestamptz` | 否 |  | 排序索引 | 源站发布时间 |
+| `published_at` | `timestamptz` | 否 |  |  | 源站发布时间 |
 | `effective_date` | `date` | 否 |  |  | 政策级生效日期，可为空 |
 | `headline` | `text` | 是 |  |  | policy update 标题 |
 | `summary` | `text` | 是 |  |  | 列表摘要 |
@@ -241,7 +241,7 @@ ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, cr
 | `policy_review_status` | `text` | 是 | `'confirm_needed'` | check enum；建议索引 | 人工审核状态 |
 | `action_calculate_status` | `text` | 是 | `'pending'` | check enum；建议索引 | user actions 计算状态 |
 | `action_calculate_attempt_count` | `integer` | 是 | `0` | check `>= 0` | user actions 计算 durable 尝试次数 |
-| `created_at` | `timestamptz` | 是 | `now()` |  | 创建时间 |
+| `created_at` | `timestamptz` | 是 | `now()` | 排序索引 | 创建时间 |
 | `updated_at` | `timestamptz` | 是 | `now()` |  | 更新时间 |
 
 约束：
@@ -261,11 +261,11 @@ CHECK (jsonb_typeof(source_metadata) = 'object')
 建议索引：
 
 ```sql
-CREATE INDEX idx_radar_policy_updates_published_at_created_at
-ON radar_policy_updates (published_at DESC NULLS LAST, created_at DESC);
+CREATE INDEX idx_radar_policy_updates_created_at_id
+ON radar_policy_updates (created_at DESC, id DESC);
 
-CREATE INDEX idx_radar_policy_updates_source_key_published_at_created_at
-ON radar_policy_updates (source_key, published_at DESC NULLS LAST, created_at DESC);
+CREATE INDEX idx_radar_policy_updates_source_key_created_at_id
+ON radar_policy_updates (source_key, created_at DESC, id DESC);
 
 CREATE INDEX idx_radar_policy_updates_policy_extract_status_attempt_count
 ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, created_at);
@@ -396,14 +396,15 @@ ON radar_notification_recipients (user_id, status);
 - 每个用户最多 5 个 active recipient。该限制由应用层在事务内检查。
 - 已存在 active：返回 duplicate。
 - 已存在 unsubscribed：不允许普通添加恢复。
-- 已存在 deleted：可以重新激活为 active，倾向复用原 row 并刷新 token。
+- 已存在 deleted：重新新增同一邮箱会创建新的 active recipient row，并生成新的 unsubscribe token；不复用旧 row。
 - 删除为软删除，设置 `status = deleted`。
 - unsubscribe 设置 `status = unsubscribed`。
 
 关于唯一索引：
 
 - `active/unsubscribed` recipient 参与唯一约束，避免同一用户同一邮箱重复订阅或绕过 unsubscribe。
-- `deleted` recipient 不参与唯一约束，因此删除后的邮箱可以重新添加。
+- `deleted` recipient 不参与唯一约束，因此删除后的邮箱可以重新添加为新的 active row。
+- deleted 后重新新增会产生新的 `recipient_id`；既有 email deliveries 仍绑定旧 `recipient_id`，发送前按旧 recipient 状态跳过，不会因为新增 row 被发送。
 
 ### 5.5 `radar_email_deliveries`
 

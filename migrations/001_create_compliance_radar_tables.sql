@@ -221,11 +221,11 @@ EXECUTE FUNCTION radar_set_updated_at();
 CREATE INDEX idx_radar_raw_source_items_policy_update_status_attempt_count
 ON radar_raw_source_items (policy_update_status, policy_update_attempt_count, created_at);
 
-CREATE INDEX idx_radar_policy_updates_published_at_created_at
-ON radar_policy_updates (published_at DESC NULLS LAST, created_at DESC);
+CREATE INDEX idx_radar_policy_updates_created_at_id
+ON radar_policy_updates (created_at DESC, id DESC);
 
-CREATE INDEX idx_radar_policy_updates_source_key_published_at_created_at
-ON radar_policy_updates (source_key, published_at DESC NULLS LAST, created_at DESC);
+CREATE INDEX idx_radar_policy_updates_source_key_created_at_id
+ON radar_policy_updates (source_key, created_at DESC, id DESC);
 
 CREATE INDEX idx_radar_policy_updates_policy_extract_status_attempt_count
 ON radar_policy_updates (policy_extract_status, policy_extract_attempt_count, created_at);
