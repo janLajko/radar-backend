@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from time import perf_counter
-from typing import TypeVar, TypedDict
+from typing import TypedDict
 
 from radar_backend.db.connection import (
     acquire_connection,
@@ -18,6 +18,7 @@ from radar_backend.db.repositories import (
     policy_impacts_repository,
     policy_updates_repository,
     product_match_repository,
+    user_action_targets_repository,
     user_actions_repository,
     webhook_events_repository,
 )
@@ -34,8 +35,7 @@ from radar_backend.domain import (
     PolicyImpactType,
     PolicyUpdateModel,
     ProductCandidate,
-    ProductImportedCoo,
-    TariffCalculationCoo,
+    SavedTariffSelection,
     WebhookEntityType,
     WebhookEventType,
 )
@@ -50,17 +50,13 @@ _ACTION_TYPE_ORDER = (
 )
 _ACTION_CALCULATE_MAX_ATTEMPT_COUNT = 3
 _VALID_HTS_PREFIX_LENGTHS = {2, 4, 6, 8, 10}
-_CooRow = TypeVar("_CooRow", TariffCalculationCoo, ProductImportedCoo)
-
-
 class ActionCalculationError(RuntimeError):
     pass
 
 
 class ProductMatchData(TypedDict):
     product_candidates: list[ProductCandidate]
-    calculation_coos_by_product_uid: dict[str, list[TariffCalculationCoo]]
-    imported_coos_by_product_uid: dict[str, list[ProductImportedCoo]]
+    saved_tariff_selections_by_product_uid: dict[str, SavedTariffSelection]
 
 
 @dataclass(frozen=True)
@@ -319,32 +315,24 @@ def _load_product_match_data() -> ProductMatchData:
     started_at = perf_counter()
     with acquire_connection() as conn:
         product_candidates = product_match_repository.list_product_candidates(conn)
-        calculation_coos = product_match_repository.list_calculation_coos(conn)
-        imported_coos = product_match_repository.list_imported_coos(conn)
+        saved_tariff_selections = product_match_repository.list_saved_tariff_selections(
+            conn
+        )
 
     data: ProductMatchData = {
         "product_candidates": product_candidates,
-        "calculation_coos_by_product_uid": _group_by_product_uid(calculation_coos),
-        "imported_coos_by_product_uid": _group_by_product_uid(imported_coos),
+        "saved_tariff_selections_by_product_uid": {
+            row["product_uid"]: row for row in saved_tariff_selections
+        },
     }
     logger.info(
-        "product match data loaded: product_candidates=%s calculation_coos=%s "
-        "imported_coos=%s duration_seconds=%.3f",
+        "product match data loaded: product_candidates=%s saved_tariff_selections=%s "
+        "duration_seconds=%.3f",
         len(product_candidates),
-        len(calculation_coos),
-        len(imported_coos),
+        len(saved_tariff_selections),
         perf_counter() - started_at,
     )
     return data
-
-
-def _group_by_product_uid(
-    rows: list[_CooRow],
-) -> dict[str, list[_CooRow]]:
-    grouped: defaultdict[str, list[_CooRow]] = defaultdict(list)
-    for row in rows:
-        grouped[row["product_uid"]].append(row)
-    return dict(grouped)
 
 
 def _create_user_actions(
@@ -462,36 +450,68 @@ def _calculate_user_action_candidates(
     impacts_by_prefix = _group_impacts_by_prefix(impacts)
 
     for candidate in product_match_data["product_candidates"]:
-        matching_impacts = [
-            impact
-            for prefix in _candidate_hts_prefixes(candidate)
-            for impact in impacts_by_prefix.get(prefix, [])
-        ]
         matches = [
             ProductImpactMatch(
-                action_types=impact.action_types,
+                action_types=(ActionType.RECLASSIFY_PRODUCT,),
                 effective_date=impact.effective_date,
             )
-            for impact in matching_impacts
-            if _candidate_matches_impact(candidate, impact, product_match_data)
+            for prefix in _hts_prefixes(candidate["hts_code_normalized"])
+            for impact in impacts_by_prefix.get(prefix, [])
+            if ActionType.RECLASSIFY_PRODUCT in impact.action_types
+            and candidate["hts_code_normalized"].startswith(impact.hts_prefix)
         ]
         if not matches:
             continue
+        builder = _builder_for_candidate(builders, candidate)
+        builder.add_product_matches(candidate, matches)
 
-        builder = builders.get(candidate["user_id"])
-        if builder is None:
-            builder = UserActionBuilder(
-                user_id=candidate["user_id"],
-                account_owner_email=candidate["account_owner_email"],
+    for selection in product_match_data["saved_tariff_selections_by_product_uid"].values():
+        matches = [
+            ProductImpactMatch(
+                action_types=(ActionType.RECALCULATE_TARIFF,),
+                effective_date=impact.effective_date,
             )
-            builders[candidate["user_id"]] = builder
-
+            for prefix in _hts_prefixes(selection["hts_code_normalized"])
+            for impact in impacts_by_prefix.get(prefix, [])
+            if ActionType.RECALCULATE_TARIFF in impact.action_types
+            and _saved_selection_matches_impact(selection, impact)
+        ]
+        if not matches:
+            continue
+        candidate = _candidate_from_saved_selection(selection)
+        builder = _builder_for_candidate(builders, candidate)
         builder.add_product_matches(candidate, matches)
 
     return [
         builder.to_candidate(policy_update)
         for _user_id, builder in sorted(builders.items(), key=lambda item: item[0])
     ]
+
+
+def _builder_for_candidate(
+    builders: dict[int, UserActionBuilder],
+    candidate: ProductCandidate,
+) -> UserActionBuilder:
+    builder = builders.get(candidate["user_id"])
+    if builder is None:
+        builder = UserActionBuilder(
+            user_id=candidate["user_id"],
+            account_owner_email=candidate["account_owner_email"],
+        )
+        builders[candidate["user_id"]] = builder
+    return builder
+
+
+def _candidate_from_saved_selection(selection: SavedTariffSelection) -> ProductCandidate:
+    return {
+        "user_id": selection["user_id"],
+        "account_owner_email": selection["account_owner_email"],
+        "product_uid": selection["product_uid"],
+        "product_name": selection["product_name"],
+        "hts_code": selection["hts_code"],
+        "hts_code_normalized": selection["hts_code_normalized"],
+        "candidate_rank": 0,
+    }
 
 
 def _group_impacts_by_prefix(
@@ -503,8 +523,7 @@ def _group_impacts_by_prefix(
     return dict(grouped)
 
 
-def _candidate_hts_prefixes(candidate: ProductCandidate) -> list[str]:
-    hts_code = candidate["hts_code_normalized"]
+def _hts_prefixes(hts_code: str) -> list[str]:
     return [
         hts_code[:length]
         for length in sorted(_VALID_HTS_PREFIX_LENGTHS)
@@ -512,40 +531,15 @@ def _candidate_hts_prefixes(candidate: ProductCandidate) -> list[str]:
     ]
 
 
-def _candidate_matches_impact(
-    candidate: ProductCandidate,
+def _saved_selection_matches_impact(
+    selection: SavedTariffSelection,
     impact: NormalizedImpact,
-    product_match_data: ProductMatchData,
 ) -> bool:
-    if not candidate["hts_code_normalized"].startswith(impact.hts_prefix):
+    if not selection["hts_code_normalized"].startswith(impact.hts_prefix):
         return False
     if not impact.coos:
         return True
-    return _has_matching_product_coo(candidate, impact, product_match_data)
-
-
-def _has_matching_product_coo(
-    candidate: ProductCandidate,
-    impact: NormalizedImpact,
-    product_match_data: ProductMatchData,
-) -> bool:
-    product_uid = candidate["product_uid"]
-    calculation_coos = product_match_data["calculation_coos_by_product_uid"].get(
-        product_uid,
-        [],
-    )
-    for row in calculation_coos:
-        if (
-            row["hts_code_normalized"].startswith(impact.hts_prefix)
-            and row["country_code"] in impact.coos
-        ):
-            return True
-
-    imported_coos = product_match_data["imported_coos_by_product_uid"].get(
-        product_uid,
-        [],
-    )
-    return any(row["country_code"] in impact.coos for row in imported_coos)
+    return selection["country_code"] in impact.coos
 
 
 def _commit_user_actions(
@@ -572,6 +566,14 @@ def _commit_user_actions(
                         "existing user action not found after conflict: "
                         f"user_id={candidate.user_id} policy_update_id={policy_update['id']}"
                     )
+
+            user_action_targets_repository.create_targets_for_user_action(
+                conn,
+                user_action_id=user_action_id,
+                policy_update_id=policy_update["id"],
+                user_id=candidate.user_id,
+                affected_products=candidate.affected_products,
+            )
 
             recipients = notification_recipients_repository.list_active_recipients_by_user_id(
                 conn,

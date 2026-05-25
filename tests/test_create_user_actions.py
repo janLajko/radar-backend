@@ -19,8 +19,8 @@ from radar_backend.worker.stages.create_user_actions import (
     CreateUserActionsStage,
     NormalizedImpact,
     _calculate_user_action_candidates,
-    _candidate_hts_prefixes,
     _commit_user_actions,
+    _hts_prefixes,
     _mark_failed,
     _normalize_impact,
 )
@@ -60,8 +60,14 @@ def test_calculates_user_action_candidates_with_deduped_products_and_actions() -
                 candidate_rank=1,
             ),
         ],
-        "calculation_coos_by_product_uid": {},
-        "imported_coos_by_product_uid": {},
+        "saved_tariff_selections_by_product_uid": {
+            "product-1": _saved_selection(
+                user_id=100,
+                product_uid="product-1",
+                hts_code="1702.60.60.00",
+                hts_code_normalized="1702606000",
+            )
+        },
     }
 
     candidates = _calculate_user_action_candidates(
@@ -110,7 +116,7 @@ def test_calculates_user_action_candidates_with_deduped_products_and_actions() -
     ]
 
 
-def test_measure_changed_uses_calculation_or_imported_coo() -> None:
+def test_measure_changed_uses_saved_selection_coo() -> None:
     policy_update = _policy_update()
     impacts = [
         NormalizedImpact(
@@ -140,28 +146,19 @@ def test_measure_changed_uses_calculation_or_imported_coo() -> None:
                 hts_code_normalized="1702111111",
             ),
         ],
-        "calculation_coos_by_product_uid": {
-            "calculation-match": [
-                {
-                    "product_uid": "calculation-match",
-                    "hts_code_normalized": "1702604000",
-                    "country_code": "CN",
-                }
-            ]
-        },
-        "imported_coos_by_product_uid": {
-            "imported-match": [
-                {
-                    "product_uid": "imported-match",
-                    "country_code": "CN",
-                }
-            ],
-            "no-match": [
-                {
-                    "product_uid": "no-match",
-                    "country_code": "MX",
-                }
-            ],
+        "saved_tariff_selections_by_product_uid": {
+            "calculation-match": _saved_selection(
+                user_id=100,
+                product_uid="calculation-match",
+                hts_code_normalized="1702604000",
+                country_code="CN",
+            ),
+            "imported-match": _saved_selection(
+                user_id=100,
+                product_uid="imported-match",
+                hts_code_normalized="1702999999",
+                country_code="MX",
+            ),
         },
     }
 
@@ -173,7 +170,6 @@ def test_measure_changed_uses_calculation_or_imported_coo() -> None:
 
     assert [product["product_uid"] for product in candidates[0].affected_products] == [
         "calculation-match",
-        "imported-match",
     ]
     assert candidates[0].action_items == [
         {
@@ -209,13 +205,13 @@ def test_non_measure_policy_impact_rejects_coos() -> None:
 
 
 def test_candidate_hts_prefixes_use_only_valid_business_lengths() -> None:
-    assert _candidate_hts_prefixes(
-        _product_candidate(
-            user_id=100,
-            product_uid="product-1",
-            hts_code_normalized="1234567890",
-        )
-    ) == ["12", "1234", "123456", "12345678", "1234567890"]
+    assert _hts_prefixes("1234567890") == [
+        "12",
+        "1234",
+        "123456",
+        "12345678",
+        "1234567890",
+    ]
 
 
 def test_stage_marks_failed_policy_update_and_continues(
@@ -241,8 +237,7 @@ def test_stage_marks_failed_policy_update_and_continues(
         "_load_product_match_data",
         lambda: {
             "product_candidates": [],
-            "calculation_coos_by_product_uid": {},
-            "imported_coos_by_product_uid": {},
+            "saved_tariff_selections_by_product_uid": {},
         },
     )
     monkeypatch.setattr(
@@ -406,4 +401,23 @@ def _product_candidate(
         "hts_code": hts_code,
         "hts_code_normalized": hts_code_normalized,
         "candidate_rank": candidate_rank,
+    }
+
+
+def _saved_selection(
+    *,
+    user_id: int,
+    product_uid: str,
+    hts_code: str = "1702.60.40.00",
+    hts_code_normalized: str = "1702604000",
+    country_code: str = "CN",
+):
+    return {
+        "user_id": user_id,
+        "account_owner_email": f"user-{user_id}@example.test",
+        "product_uid": product_uid,
+        "product_name": f"Product {product_uid}",
+        "hts_code": hts_code,
+        "hts_code_normalized": hts_code_normalized,
+        "country_code": country_code,
     }

@@ -194,12 +194,11 @@ class ProductCandidate(TypedDict):
     candidate_rank: int | None
 
 
-class TariffCalculationCoo(TypedDict):
+class SavedTariffSelection(TypedDict):
+    user_id: int
+    account_owner_email: str | None
     product_uid: str
+    product_name: str
+    hts_code: str
     hts_code_normalized: str
-    country_code: str
-
-
-class ProductImportedCoo(TypedDict):
-    product_uid: str
     country_code: str

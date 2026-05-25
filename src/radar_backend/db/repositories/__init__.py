@@ -9,6 +9,9 @@ from radar_backend.db.repositories.policy_updates_repository import PolicyUpdate
 from radar_backend.db.repositories.product_match_repository import ProductMatchRepository
 from radar_backend.db.repositories.raw_source_items_repository import RawSourceItemsRepository
 from radar_backend.db.repositories.user_actions_repository import UserActionsRepository
+from radar_backend.db.repositories.user_action_targets_repository import (
+    UserActionTargetsRepository,
+)
 from radar_backend.db.repositories.webhook_events_repository import WebhookEventsRepository
 
 email_deliveries_repository = EmailDeliveriesRepository()
@@ -18,6 +21,7 @@ policy_updates_repository = PolicyUpdatesRepository()
 product_match_repository = ProductMatchRepository()
 raw_source_items_repository = RawSourceItemsRepository()
 user_actions_repository = UserActionsRepository()
+user_action_targets_repository = UserActionTargetsRepository()
 webhook_events_repository = WebhookEventsRepository()
 
 __all__ = [
@@ -28,5 +32,6 @@ __all__ = [
     "product_match_repository",
     "raw_source_items_repository",
     "user_actions_repository",
+    "user_action_targets_repository",
     "webhook_events_repository",
 ]

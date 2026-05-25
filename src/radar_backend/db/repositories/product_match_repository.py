@@ -7,8 +7,7 @@ from psycopg.rows import dict_row
 
 from radar_backend.domain import (
     ProductCandidate,
-    ProductImportedCoo,
-    TariffCalculationCoo,
+    SavedTariffSelection,
 )
 
 
@@ -48,45 +47,38 @@ class ProductMatchRepository:
 
         return [self._to_product_candidate(row) for row in rows]
 
-    def list_calculation_coos(
+    def list_saved_tariff_selections(
         self,
         conn: Connection,
-    ) -> list[TariffCalculationCoo]:
+    ) -> list[SavedTariffSelection]:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                SELECT
-                  product_uid,
-                  hts_code_normalized,
-                  upper(trim(country_code)) AS country_code
-                FROM t_sandbox_calculation_result
-                WHERE hts_code_normalized ~ '^[0-9]{10}$'
-                  AND NULLIF(trim(country_code), '') IS NOT NULL
-                ORDER BY product_uid ASC, hts_code_normalized ASC, country_code ASC
+                SELECT DISTINCT ON (r.product_uid)
+                  p.user_id,
+                  u.email AS account_owner_email,
+                  r.product_uid,
+                  COALESCE(NULLIF(p.display_name, ''), NULLIF(p.product_name, ''), r.product_uid) AS product_name,
+                  COALESCE(NULLIF(r.hts_code, ''), r.hts_code_normalized) AS hts_code,
+                  r.hts_code_normalized,
+                  upper(trim(r.country_code)) AS country_code
+                FROM t_sandbox_calculation_result r
+                JOIN t_product p
+                  ON p.product_uid = r.product_uid
+                LEFT JOIN users u
+                  ON u.id = p.user_id
+                WHERE r.is_saved_selection = true
+                  AND p.is_deleted IS FALSE
+                  AND p.is_split_parent IS FALSE
+                  AND p.classification_type = 'hts'
+                  AND r.hts_code_normalized ~ '^[0-9]{10}$'
+                  AND NULLIF(trim(r.country_code), '') IS NOT NULL
+                ORDER BY r.product_uid, r.updated_at DESC, r.created_at DESC, r.result_uid DESC
                 """
             )
             rows = cur.fetchall()
 
-        return [self._to_calculation_coo(row) for row in rows]
-
-    def list_imported_coos(
-        self,
-        conn: Connection,
-    ) -> list[ProductImportedCoo]:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                """
-                SELECT
-                  product_uid,
-                  upper(trim(imported_country_code)) AS country_code
-                FROM t_sandbox_product_profile
-                WHERE NULLIF(trim(imported_country_code), '') IS NOT NULL
-                ORDER BY product_uid ASC, country_code ASC
-                """
-            )
-            rows = cur.fetchall()
-
-        return [self._to_imported_coo(row) for row in rows]
+        return [self._to_saved_tariff_selection(row) for row in rows]
 
     def _to_product_candidate(self, row: dict[str, object]) -> ProductCandidate:
         return {
@@ -99,15 +91,13 @@ class ProductMatchRepository:
             "candidate_rank": cast(int | None, row["candidate_rank"]),
         }
 
-    def _to_calculation_coo(self, row: dict[str, object]) -> TariffCalculationCoo:
+    def _to_saved_tariff_selection(self, row: dict[str, object]) -> SavedTariffSelection:
         return {
+            "user_id": cast(int, row["user_id"]),
+            "account_owner_email": cast(str | None, row["account_owner_email"]),
             "product_uid": cast(str, row["product_uid"]),
+            "product_name": cast(str, row["product_name"]),
+            "hts_code": cast(str, row["hts_code"]),
             "hts_code_normalized": cast(str, row["hts_code_normalized"]),
-            "country_code": cast(str, row["country_code"]),
-        }
-
-    def _to_imported_coo(self, row: dict[str, object]) -> ProductImportedCoo:
-        return {
-            "product_uid": cast(str, row["product_uid"]),
             "country_code": cast(str, row["country_code"]),
         }

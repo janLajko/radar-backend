@@ -100,6 +100,32 @@ def test_create_user_actions_against_real_database() -> None:
                     "status": ActionItemStatus.ACTION_NEEDED,
                 },
             ]
+            targets = _get_targets_by_user_action_id(conn, user_action_id)
+            assert [
+                (target["product_uid"], target["action_type"], target["status"])
+                for target in targets
+            ] == [
+                (
+                    ids["calculation_product_uid"],
+                    "recalculate_tariff",
+                    "action_needed",
+                ),
+                (
+                    ids["calculation_product_uid"],
+                    "reclassify_product",
+                    "action_needed",
+                ),
+                (
+                    ids["imported_product_uid"],
+                    "recalculate_tariff",
+                    "action_needed",
+                ),
+                (
+                    ids["imported_product_uid"],
+                    "reclassify_product",
+                    "action_needed",
+                ),
+            ]
 
             delivery = _get_email_delivery_by_user_action_id(conn, user_action_id)
             assert delivery is not None
@@ -168,6 +194,14 @@ def _insert_stage_4_fixture(conn: Connection, *, suffix: str) -> dict[str, int |
         hts_code_normalized="1702604000",
         country_code="CN",
         suffix=suffix,
+    )
+    _insert_calculation_coo(
+        conn,
+        product_uid=imported_product_uid,
+        hts_code="1702.90.10.00",
+        hts_code_normalized="1702901000",
+        country_code="CN",
+        suffix=f"imported-{suffix}",
     )
     _insert_imported_coo(
         conn,
@@ -321,7 +355,8 @@ def _insert_calculation_coo(
           hts_code,
           hts_code_normalized,
           country_code,
-          result_json
+          result_json,
+          is_saved_selection
         )
         VALUES (
           %(result_uid)s,
@@ -330,7 +365,8 @@ def _insert_calculation_coo(
           %(hts_code)s,
           %(hts_code_normalized)s,
           %(country_code)s,
-          '{}'::jsonb
+          '{}'::jsonb,
+          true
         )
         """,
         {
@@ -542,6 +578,26 @@ def _get_email_delivery_by_user_action_id(conn: Connection, user_action_id: int)
     return email_deliveries_repository.get_by_id(conn, id=row[0])
 
 
+def _get_targets_by_user_action_id(conn: Connection, user_action_id: int):
+    rows = conn.execute(
+        """
+        SELECT product_uid, action_type, status
+        FROM radar_user_action_targets
+        WHERE user_action_id = %(user_action_id)s
+        ORDER BY product_uid ASC, action_type ASC
+        """,
+        {"user_action_id": user_action_id},
+    ).fetchall()
+    return [
+        {
+            "product_uid": row[0],
+            "action_type": row[1],
+            "status": row[2],
+        }
+        for row in rows
+    ]
+
+
 def _delete_stage_4_fixture(
     conn: Connection,
     *,
@@ -557,6 +613,15 @@ def _delete_stage_4_fixture(
     conn.execute(
         """
         DELETE FROM radar_email_deliveries
+        WHERE user_action_id IN (
+          SELECT id FROM radar_user_actions WHERE policy_update_id = %(policy_update_id)s
+        )
+        """,
+        {"policy_update_id": policy_update_id},
+    )
+    conn.execute(
+        """
+        DELETE FROM radar_user_action_targets
         WHERE user_action_id IN (
           SELECT id FROM radar_user_actions WHERE policy_update_id = %(policy_update_id)s
         )
