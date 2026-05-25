@@ -8,7 +8,7 @@ def build_provider(model: str | None = None) -> LLMProvider:
     """Instantiate the configured LLM provider.
 
     Controlled by ``LLM_PROVIDER``. Currently supported values:
-    - ``"openai"`` — OpenAI chat completions API
+    - ``"openai"`` — OpenAI Responses API
     - ``"anthropic"`` or ``"claude"`` — Anthropic Messages API
 
     To add a new provider (e.g. Anthropic, Gemini):

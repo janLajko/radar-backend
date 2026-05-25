@@ -86,7 +86,6 @@ class CreatePolicyImpactsStage:
                         source_url=update["source_url"],
                     ),
                 )
-                logger.info("impact_json:%s", impact_json)
             except Exception as exc:
                 logger.warning(
                     "create_policy_impacts: agent failed id=%s: %s", update["id"], exc

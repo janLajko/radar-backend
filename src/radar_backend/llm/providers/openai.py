@@ -11,20 +11,9 @@ from radar_backend.llm.provider import ToolDefinition, ToolDispatcher
 
 logger = logging.getLogger(__name__)
 
-_MODEL_MAX_OUTPUT_TOKENS = {
-    "gpt-5.5": 128000,
-    "gpt-5.4": 128000,
-    "gpt-5.3": 128000,
-    "gpt-5.2": 128000,
-    "gpt-5.1": 128000,
-    "gpt-5": 128000,
-    "gpt-4.1": 32768,
-    "gpt-4o": 16384,
-}
-
 
 class OpenAIProvider:
-    """LLMProvider implementation backed by the OpenAI chat completions API."""
+    """LLMProvider implementation backed by the OpenAI Responses API."""
 
     def __init__(
         self,
@@ -37,17 +26,13 @@ class OpenAIProvider:
         self._max_attempts = max_attempts
 
     def complete(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        response = self._create_chat_completion(
-            messages=[
+        response = self._create_response(
+            input_items=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            max_tokens=max_tokens,
         )
-        content = response.choices[0].message.content
-        if content is None:
-            raise ValueError("LLM returned empty content")
-        return content
+        return _response_text(response)
 
     def complete_with_tools(
         self,
@@ -58,79 +43,69 @@ class OpenAIProvider:
         max_tokens: int = 8192,
         max_iterations: int = 20,
     ) -> str:
-        messages: list[dict[str, Any]] = [
+        input_items: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
         openai_tools = [_to_openai_tool(tool) for tool in tools]
 
         for iteration in range(max_iterations):
-            response = self._create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
+            response = self._create_response(
+                input_items=input_items,
                 tools=openai_tools,
             )
-            message = response.choices[0].message
-            tool_calls = message.tool_calls or []
+            tool_calls = _function_calls(response)
 
             logger.debug(
-                "openai_provider: tool_loop iteration=%d finish_reason=%s tool_calls=%d model=%s",
+                "openai_provider: tool_loop iteration=%d status=%s tool_calls=%d model=%s",
                 iteration,
-                response.choices[0].finish_reason,
+                getattr(response, "status", None),
                 len(tool_calls),
                 self._model,
             )
 
             if not tool_calls:
-                if message.content is None:
-                    raise ValueError("LLM returned empty content")
-                return message.content
+                return _response_text(response)
 
-            messages.append(message.model_dump(exclude_none=True))
+            input_items.extend(_response_output_items(response))
             for tool_call in tool_calls:
-                if tool_call.type != "function":
-                    continue
                 try:
-                    inputs = json.loads(tool_call.function.arguments or "{}")
+                    inputs = json.loads(tool_call.arguments or "{}")
                 except json.JSONDecodeError as exc:
                     raise ValueError(
-                        f"invalid tool arguments for {tool_call.function.name}: {exc}"
+                        f"invalid tool arguments for {tool_call.name}: {exc}"
                     ) from exc
                 logger.info(
                     "openai_provider: tool=%s inputs=%s model=%s",
-                    tool_call.function.name,
+                    tool_call.name,
                     json.dumps(inputs)[:200],
                     self._model,
                 )
-                result = dispatch_tool(tool_call.function.name, inputs)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
+                result = dispatch_tool(tool_call.name, inputs)
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call.call_id,
+                    "output": result,
                 })
 
         raise ValueError(f"tool loop exceeded {max_iterations} iterations without final text")
 
-    def _create_chat_completion(
+    def _create_response(
         self,
-        messages: list[dict[str, Any]],
-        max_tokens: int,
+        input_items: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ):
         last_exc: Exception = RuntimeError("no attempts made")
-        token_param = _token_limit_param(self._model)
-        token_limit = _max_output_tokens(self._model) or max_tokens
         for attempt in range(self._max_attempts):
             try:
                 kwargs: dict[str, Any] = {
                     "model": self._model,
-                    "messages": messages,
+                    "input": input_items,
                 }
-                # kwargs[token_param] = token_limit
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
-                return self._client.chat.completions.create(**kwargs)
+                return self._client.responses.create(**kwargs)
             except openai.APIConnectionError as exc:
                 last_exc = exc
                 if attempt < self._max_attempts - 1:
@@ -141,10 +116,6 @@ class OpenAIProvider:
                     if attempt < self._max_attempts - 1:
                         time.sleep(2**attempt)
                 else:
-                    if _is_unsupported_token_param(exc, token_param):
-                        token_param = _alternate_token_param(token_param)
-                        last_exc = exc
-                        continue
                     raise
         raise last_exc
 
@@ -152,39 +123,42 @@ class OpenAIProvider:
 def _to_openai_tool(tool: ToolDefinition) -> dict[str, Any]:
     return {
         "type": "function",
-        "function": {
-            "name": tool["name"],
-            "description": tool.get("description", ""),
-            "parameters": tool["input_schema"],
-        },
+        "name": tool["name"],
+        "description": tool.get("description", ""),
+        "parameters": tool["input_schema"],
+        "strict": tool.get("strict", False),
     }
 
 
-def _token_limit_param(model: str) -> str:
-    model = model.lower()
-    if model.startswith("gpt-5") or model.startswith("o"):
-        return "max_completion_tokens"
-    return "max_tokens"
+def _function_calls(response: Any) -> list[Any]:
+    return [
+        item
+        for item in getattr(response, "output", []) or []
+        if getattr(item, "type", None) == "function_call"
+    ]
 
 
-def _max_output_tokens(model: str) -> int | None:
-    model = model.lower()
-    matches = (
-        (prefix, max_tokens)
-        for prefix, max_tokens in _MODEL_MAX_OUTPUT_TOKENS.items()
-        if model == prefix or model.startswith(f"{prefix}-")
-    )
-    return next(matches, (None, None))[1]
+def _response_output_items(response: Any) -> list[dict[str, Any]]:
+    return [
+        item.model_dump(exclude_none=True)
+        for item in getattr(response, "output", []) or []
+    ]
 
 
-def _alternate_token_param(param: str) -> str:
-    if param == "max_tokens":
-        return "max_completion_tokens"
-    return "max_tokens"
+def _response_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return output_text
 
+    text_parts: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in getattr(item, "content", []) or []:
+            if getattr(content, "type", None) == "output_text":
+                text_parts.append(getattr(content, "text", ""))
 
-def _is_unsupported_token_param(exc: openai.APIStatusError, param: str) -> bool:
-    if exc.status_code != 400:
-        return False
-    message = str(exc).lower()
-    return "unsupported parameter" in message and param.lower() in message
+    content = "".join(text_parts)
+    if content:
+        return content
+    raise ValueError("LLM returned empty content")
