@@ -88,6 +88,30 @@ class UserActionsRepository:
 
         return self._to_model(row) if row is not None else None
 
+    def get_id_by_user_and_policy_update(
+        self,
+        conn: Connection,
+        *,
+        user_id: int,
+        policy_update_id: int,
+    ) -> int | None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM radar_user_actions
+                WHERE user_id = %(user_id)s
+                  AND policy_update_id = %(policy_update_id)s
+                """,
+                {
+                    "user_id": user_id,
+                    "policy_update_id": policy_update_id,
+                },
+            )
+            row = cur.fetchone()
+
+        return cast(int, row[0]) if row is not None else None
+
     def _to_model(self, row: dict[str, object]) -> UserActionModel:
         return {
             "id": cast(int, row["id"]),

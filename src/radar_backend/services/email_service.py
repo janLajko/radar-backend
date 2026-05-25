@@ -153,7 +153,9 @@ def _validated_payload(payload: object) -> EmailDeliveryPayload:
         _invalid_payload("payload must be an object")
 
     payload_dict = cast(dict[str, object], payload)
-    _require_str(payload_dict, "account_owner_email")
+    account_owner_email = _require_optional_str(payload_dict, "account_owner_email")
+    if account_owner_email is not None and not account_owner_email.strip():
+        payload_dict.pop("account_owner_email", None)
     _require_str(payload_dict, "source_label")
     _require_optional_str(payload_dict, "reference_number")
     _require_str(payload_dict, "headline")
@@ -261,6 +263,15 @@ def _build_subject(payload: EmailDeliveryPayload) -> str:
 
 def _build_text_body(payload: EmailDeliveryPayload, urls: _EmailUrls) -> str:
     products = payload["affected_products"]
+    footer_lines = [
+        f"Original source: {payload['source_url']}",
+        f"Monitoring page: {urls['monitoring']}",
+        f"Unsubscribe: {urls['unsubscribe']}",
+    ]
+    account_owner_email = payload.get("account_owner_email")
+    if account_owner_email:
+        footer_lines.append(f"Account owner: {account_owner_email}")
+
     lines = [
         f"A new {payload['source_label']} update affects {len(products)} products on your sandbox.",
         "",
@@ -285,12 +296,9 @@ def _build_text_body(payload: EmailDeliveryPayload, urls: _EmailUrls) -> str:
             "",
             f"View full briefing: {urls['view_details']}",
             "",
-            f"Original source: {payload['source_url']}",
-            f"Monitoring page: {urls['monitoring']}",
-            f"Unsubscribe: {urls['unsubscribe']}",
-            f"Account owner: {payload['account_owner_email']}",
         ]
     )
+    lines.extend(footer_lines)
     return "\n".join(lines)
 
 
@@ -303,6 +311,19 @@ def _build_html_body(payload: EmailDeliveryPayload, urls: _EmailUrls) -> str:
         _format_action_summary_html(action_summary, urls)
         for action_summary in payload["action_summaries"]
     )
+    footer_lines = [
+        f"Original source: <a href=\"{html.escape(payload['source_url'], quote=True)}\">"
+        f"{html.escape(payload['source_url'])}</a><br>",
+        f"Monitoring page: <a href=\"{html.escape(urls['monitoring'], quote=True)}\">"
+        "Compliance Radar</a><br>",
+        f"Unsubscribe: <a href=\"{html.escape(urls['unsubscribe'], quote=True)}\">"
+        "unsubscribe</a>",
+    ]
+    account_owner_email = payload.get("account_owner_email")
+    if account_owner_email:
+        footer_lines[-1] = footer_lines[-1] + "<br>"
+        footer_lines.append(f"Account owner: {html.escape(account_owner_email)}")
+
     return "\n".join(
         [
             "<!doctype html>",
@@ -319,13 +340,7 @@ def _build_html_body(payload: EmailDeliveryPayload, urls: _EmailUrls) -> str:
             f"<p><a href=\"{html.escape(urls['view_details'], quote=True)}\">View full briefing</a></p>",
             "<hr>",
             "<p>",
-            f"Original source: <a href=\"{html.escape(payload['source_url'], quote=True)}\">"
-            f"{html.escape(payload['source_url'])}</a><br>",
-            f"Monitoring page: <a href=\"{html.escape(urls['monitoring'], quote=True)}\">"
-            "Compliance Radar</a><br>",
-            f"Unsubscribe: <a href=\"{html.escape(urls['unsubscribe'], quote=True)}\">"
-            "unsubscribe</a><br>",
-            f"Account owner: {html.escape(payload['account_owner_email'])}",
+            *footer_lines,
             "</p>",
             "</body>",
             "</html>",

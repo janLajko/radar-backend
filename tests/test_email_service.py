@@ -101,6 +101,41 @@ def test_email_service_rejects_invalid_payload(
         email_service_module.EmailService().send_email_delivery(delivery, _recipient())
 
 
+@pytest.mark.parametrize("account_owner_email", [None, ""])
+def test_email_service_allows_missing_account_owner_email(
+    monkeypatch: pytest.MonkeyPatch,
+    account_owner_email: str | None,
+) -> None:
+    sent_messages: list[EmailMessage] = []
+    delivery = _email_delivery()
+    if account_owner_email is None:
+        delivery["payload"].pop("account_owner_email")
+    else:
+        delivery["payload"]["account_owner_email"] = account_owner_email
+
+    _configure_email(monkeypatch)
+    monkeypatch.setattr(
+        email_service_module._SMTP_EMAIL_BUCKET,
+        "acquire",
+        lambda _tokens: None,
+    )
+    monkeypatch.setattr(
+        email_service_module,
+        "_send_email_message_once",
+        sent_messages.append,
+    )
+
+    email_service_module.EmailService().send_email_delivery(delivery, _recipient())
+
+    assert len(sent_messages) == 1
+    text_body = sent_messages[0].get_body(preferencelist=("plain",))
+    html_body = sent_messages[0].get_body(preferencelist=("html",))
+    assert text_body is not None
+    assert html_body is not None
+    assert "Account owner:" not in text_body.get_content()
+    assert "Account owner:" not in html_body.get_content()
+
+
 def test_email_service_requires_product_hts_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

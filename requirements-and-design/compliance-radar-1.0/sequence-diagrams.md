@@ -508,7 +508,7 @@ else email already active
 else email already unsubscribed
   ClassificationBackend-->Frontend: 409 unsubscribed
 else email exists as deleted
-  ClassificationBackend->SharedDB: reactivate as active\nrefresh unsubscribe_token
+  ClassificationBackend->SharedDB: insert new active recipient\ncreate new unsubscribe_token
   ClassificationBackend-->Frontend: recipient
 else new email
   ClassificationBackend->SharedDB: insert recipient as active\ncreate unsubscribe_token

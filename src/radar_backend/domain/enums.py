@@ -27,6 +27,14 @@ class ActionCalculateStatus(StrEnum):
     FAILED = "failed"
 
 
+class PolicyImpactType(StrEnum):
+    DELETED = "deleted"
+    INSERTED = "inserted"
+    MEASURE_CHANGED = "measure_changed"
+    DESC_CHANGED = "desc_changed"
+    RATE_CHANGED = "rate_changed"
+
+
 class UserActionStatus(StrEnum):
     ACTION_NEEDED = "action_needed"
     COMPLETED = "completed"

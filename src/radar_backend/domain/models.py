@@ -8,6 +8,7 @@ from radar_backend.domain.enums import (
     ActionItemStatus,
     ActionType,
     EmailDeliveryStatus,
+    PolicyImpactType,
     PolicyExtractStatus,
     PolicyReviewStatus,
     RawSourceItemPolicyUpdateStatus,
@@ -121,6 +122,18 @@ class PolicyUpdateModel(TypedDict):
     updated_at: datetime
 
 
+class PolicyImpactModel(TypedDict):
+    id: int
+    policy_update_id: int
+    hts_number: str
+    impacted_type: PolicyImpactType
+    effective_time: date | None
+    coos: list[str] | None
+    row_desc: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class UserActionModel(TypedDict):
     id: int
     user_id: int
@@ -169,3 +182,23 @@ class WebhookEventModel(TypedDict):
     sent_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ProductCandidate(TypedDict):
+    user_id: int
+    account_owner_email: str | None
+    product_uid: str
+    product_name: str
+    hts_code: str
+    hts_code_normalized: str
+    candidate_rank: int | None
+
+
+class SavedTariffSelection(TypedDict):
+    user_id: int
+    account_owner_email: str | None
+    product_uid: str
+    product_name: str
+    hts_code: str
+    hts_code_normalized: str
+    country_code: str
