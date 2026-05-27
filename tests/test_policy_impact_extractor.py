@@ -76,7 +76,39 @@ class FakeAuditCorrectedJsonProvider:
         self.call_count = 0
 
     def complete(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        raise AssertionError("complete should not be called")
+        self.call_count += 1
+        assert "9903.82.03" in user
+        assert "senior trade compliance editor" in system
+        assert "Audit Errors To Fix" in user
+        assert "Policy Document Content" not in user
+        return """
+        <json>{
+            "source": {},
+            "hts_modifications": [{
+                "action": "insert",
+                "note": 16,
+                "deleted": [],
+                "inserted": ["9903.82.03"]
+            }],
+            "scope_sets": [],
+            "measures": [{
+                "measure_heading": "9903.82.03",
+                "measure_heading_type": "chapter99",
+                "note": 16,
+                "description": "Supported inserted heading",
+                "ad_valorem_rate": null,
+                "value_basis": null,
+                "country_iso2": null,
+                "is_potential": false,
+                "effective_start_date": null,
+                "effective_end_date": null,
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
 
     def complete_with_tools(
         self,
@@ -89,37 +121,6 @@ class FakeAuditCorrectedJsonProvider:
     ) -> str:
         self.call_count += 1
         assert "9903.82.03" in user
-        if "senior trade compliance editor" in system:
-            assert "Audit Errors To Fix" in user
-            return """
-            <json>{
-                "source": {},
-                "hts_modifications": [{
-                    "action": "insert",
-                    "note": 16,
-                    "deleted": [],
-                    "inserted": ["9903.82.03"]
-                }],
-                "scope_sets": [],
-                "measures": [{
-                    "measure_heading": "9903.82.03",
-                    "measure_heading_type": "chapter99",
-                    "note": 16,
-                    "description": "Supported inserted heading",
-                    "ad_valorem_rate": null,
-                    "value_basis": null,
-                    "country_iso2": null,
-                    "is_potential": false,
-                    "effective_start_date": null,
-                    "effective_end_date": null,
-                    "affected_scope_refs": [],
-                    "excluded_scope_refs": [],
-                    "conditions": [],
-                    "excluded_chapter99_headings": [],
-                    "superseded_chapter99_headings": []
-                }]
-            }</json>
-            """
         assert "senior trade compliance auditor" in system
         if self.call_count == 1:
             return """
@@ -172,13 +173,178 @@ def test_audit_policy_impact_uses_repair_after_failed_audit() -> None:
     assert provider.call_count == 3
 
 
+def test_parse_json_output_accepts_dotted_ten_digit_hts_headings() -> None:
+    result = _parse_json_output(
+        """
+        <json>{
+            "source": {},
+            "hts_modifications": [{
+                "action": "replace",
+                "note": null,
+                "deleted": ["2106.90.99.98"],
+                "inserted": ["2106.90.9998"]
+            }],
+            "scope_sets": [{
+                "id": "scope_2106",
+                "source": "direct_hts_modification",
+                "note": null,
+                "subdivision": null,
+                "label": "Ten-digit HTS scope",
+                "headings": ["2106.90.99.98", "2106.90.9998", "2106.90.99.98-2106.90.99.99"]
+            }],
+            "measures": [{
+                "measure_heading": "2106.90.99.98",
+                "measure_heading_type": "ordinary_hts",
+                "note": null,
+                "description": "Supported ten-digit HTS heading",
+                "ad_valorem_rate": null,
+                "value_basis": null,
+                "country_iso2": null,
+                "is_potential": false,
+                "effective_start_date": null,
+                "effective_end_date": null,
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
+    )
+
+    assert result["scope_sets"][0]["headings"][0] == "2106.90.99.98"
+    assert result["measures"][0]["measure_heading"] == "2106.90.99.98"
+
+
+def test_parse_json_output_accepts_chapter98_measure_type() -> None:
+    result = _parse_json_output(
+        """
+        <json>{
+            "source": {},
+            "hts_modifications": [],
+            "scope_sets": [],
+            "measures": [{
+                "measure_heading": "9819.11.09",
+                "measure_heading_type": "chapter98",
+                "note": 2,
+                "description": "Chapter 98 provision modified by governing note text.",
+                "ad_valorem_rate": null,
+                "value_basis": null,
+                "country_iso2": null,
+                "is_potential": false,
+                "effective_start_date": "2002-10-01",
+                "effective_end_date": null,
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
+    )
+
+    assert result["measures"][0]["measure_heading_type"] == "chapter98"
+    assert result["measures"][0]["effective_start_date"] == "2002-10-01"
+    assert result["measures"][0]["effective_end_date"] is None
+
+
+def test_parse_json_output_requires_heading_for_chapter98_measure() -> None:
+    with pytest.raises(ValueError, match="measure_heading is required for chapter98"):
+        _parse_json_output(
+            """
+            <json>{
+                "source": {},
+                "hts_modifications": [],
+                "scope_sets": [],
+                "measures": [{
+                    "measure_heading": null,
+                    "measure_heading_type": "chapter98",
+                    "note": 2,
+                    "description": "Invalid Chapter 98 measure without carrier heading.",
+                    "ad_valorem_rate": null,
+                    "value_basis": null,
+                    "country_iso2": null,
+                    "is_potential": false,
+                    "effective_start_date": null,
+                    "effective_end_date": null,
+                    "affected_scope_refs": [],
+                    "excluded_scope_refs": [],
+                    "excluded_chapter99_headings": [],
+                    "superseded_chapter99_headings": []
+                }]
+            }</json>
+            """
+        )
+
+
+def test_parse_json_output_rejects_scope_refs_for_chapter98_measure() -> None:
+    with pytest.raises(ValueError, match="affected_scope_refs must be empty for chapter98"):
+        _parse_json_output(
+            """
+            <json>{
+                "source": {},
+                "hts_modifications": [],
+                "scope_sets": [{
+                    "id": "scope_9819",
+                    "source": "direct_hts_modification",
+                    "note": null,
+                    "subdivision": null,
+                    "label": "Invalid repeated Chapter 98 scope",
+                    "headings": ["9819.11.09"]
+                }],
+                "measures": [{
+                    "measure_heading": "9819.11.09",
+                    "measure_heading_type": "chapter98",
+                    "note": 2,
+                    "description": "Invalid Chapter 98 measure using scope refs.",
+                    "ad_valorem_rate": null,
+                    "value_basis": null,
+                    "country_iso2": null,
+                    "is_potential": false,
+                    "effective_start_date": "2002-10-01",
+                    "effective_end_date": null,
+                    "affected_scope_refs": ["scope_9819"],
+                    "excluded_scope_refs": [],
+                    "excluded_chapter99_headings": [],
+                    "superseded_chapter99_headings": []
+                }]
+            }</json>
+            """
+        )
+
+
 class FakeAuditAlwaysFailProvider:
     def __init__(self) -> None:
         self.call_count = 0
         self.audit_count = 0
 
     def complete(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        raise AssertionError("complete should not be called")
+        self.call_count += 1
+        assert "senior trade compliance editor" in system
+        assert "Audit Errors To Fix" in user
+        return """
+        <json>{
+            "source": {},
+            "hts_modifications": [],
+            "scope_sets": [],
+            "measures": [{
+                "measure_heading": "9903.82.03",
+                "measure_heading_type": "chapter99",
+                "note": 16,
+                "description": "Repair attempted",
+                "ad_valorem_rate": null,
+                "value_basis": null,
+                "country_iso2": null,
+                "is_potential": false,
+                "effective_start_date": null,
+                "effective_end_date": null,
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
 
     def complete_with_tools(
         self,
@@ -190,32 +356,6 @@ class FakeAuditAlwaysFailProvider:
         max_iterations: int = 20,
     ) -> str:
         self.call_count += 1
-        if "senior trade compliance editor" in system:
-            assert "Audit Errors To Fix" in user
-            return """
-            <json>{
-                "source": {},
-                "hts_modifications": [],
-                "scope_sets": [],
-                "measures": [{
-                    "measure_heading": "9903.82.03",
-                    "measure_heading_type": "chapter99",
-                    "note": 16,
-                    "description": "Repair attempted",
-                    "ad_valorem_rate": null,
-                    "value_basis": null,
-                    "country_iso2": null,
-                    "is_potential": false,
-                    "effective_start_date": null,
-                    "effective_end_date": null,
-                    "affected_scope_refs": [],
-                    "excluded_scope_refs": [],
-                    "conditions": [],
-                    "excluded_chapter99_headings": [],
-                    "superseded_chapter99_headings": []
-                }]
-            }</json>
-            """
         assert "senior trade compliance auditor" in system
         self.audit_count += 1
         if self.audit_count > 1:
@@ -265,7 +405,32 @@ class FakeAuditDateCorrectedJsonProvider:
         self.call_count = 0
 
     def complete(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        raise AssertionError("complete should not be called")
+        self.call_count += 1
+        assert "senior trade compliance editor" in system
+        assert "Audit Errors To Fix" in user
+        return """
+        <json>{
+            "source": {},
+            "hts_modifications": [],
+            "scope_sets": [],
+            "measures": [{
+                "measure_heading": "9903.04.61",
+                "measure_heading_type": "chapter99",
+                "note": 40,
+                "description": "Temporary treatment",
+                "ad_valorem_rate": 0.0,
+                "value_basis": null,
+                "country_iso2": null,
+                "is_potential": false,
+                "effective_start_date": "2026-07-31",
+                "effective_end_date": "2026-09-28",
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
 
     def complete_with_tools(
         self,
@@ -277,32 +442,6 @@ class FakeAuditDateCorrectedJsonProvider:
         max_iterations: int = 20,
     ) -> str:
         self.call_count += 1
-        if "senior trade compliance editor" in system:
-            assert "Audit Errors To Fix" in user
-            return """
-            <json>{
-                "source": {},
-                "hts_modifications": [],
-                "scope_sets": [],
-                "measures": [{
-                    "measure_heading": "9903.04.61",
-                    "measure_heading_type": "chapter99",
-                    "note": 40,
-                    "description": "Temporary treatment",
-                    "ad_valorem_rate": 0.0,
-                    "value_basis": null,
-                    "country_iso2": null,
-                    "is_potential": false,
-                    "effective_start_date": "2026-07-31",
-                    "effective_end_date": "2026-09-28",
-                    "affected_scope_refs": [],
-                    "excluded_scope_refs": [],
-                    "conditions": [],
-                    "excluded_chapter99_headings": [],
-                    "superseded_chapter99_headings": []
-                }]
-            }</json>
-            """
         assert "senior trade compliance auditor" in system
         if self.call_count == 1:
             return """
@@ -357,7 +496,32 @@ class FakeAuditNullEndDateCorrectedJsonProvider:
         self.call_count = 0
 
     def complete(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        raise AssertionError("complete should not be called")
+        self.call_count += 1
+        assert "senior trade compliance editor" in system
+        assert "Audit Errors To Fix" in user
+        return """
+        <json>{
+            "source": {},
+            "hts_modifications": [],
+            "scope_sets": [],
+            "measures": [{
+                "measure_heading": "9903.04.66",
+                "measure_heading_type": "chapter99",
+                "note": 40,
+                "description": "Continuing treatment",
+                "ad_valorem_rate": 0.0,
+                "value_basis": null,
+                "country_iso2": null,
+                "is_potential": false,
+                "effective_start_date": "2026-07-31",
+                "effective_end_date": null,
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
 
     def complete_with_tools(
         self,
@@ -369,32 +533,6 @@ class FakeAuditNullEndDateCorrectedJsonProvider:
         max_iterations: int = 20,
     ) -> str:
         self.call_count += 1
-        if "senior trade compliance editor" in system:
-            assert "Audit Errors To Fix" in user
-            return """
-            <json>{
-                "source": {},
-                "hts_modifications": [],
-                "scope_sets": [],
-                "measures": [{
-                    "measure_heading": "9903.04.66",
-                    "measure_heading_type": "chapter99",
-                    "note": 40,
-                    "description": "Continuing treatment",
-                    "ad_valorem_rate": 0.0,
-                    "value_basis": null,
-                    "country_iso2": null,
-                    "is_potential": false,
-                    "effective_start_date": "2026-07-31",
-                    "effective_end_date": null,
-                    "affected_scope_refs": [],
-                    "excluded_scope_refs": [],
-                    "conditions": [],
-                    "excluded_chapter99_headings": [],
-                    "superseded_chapter99_headings": []
-                }]
-            }</json>
-            """
         assert "senior trade compliance auditor" in system
         if self.call_count == 1:
             return """
@@ -493,7 +631,7 @@ class FakeAuditWarningOnlyFailProvider:
             "verdict": "fail",
             "issues": [{
                 "severity": "warning",
-                "json_path": "measures[0].conditions",
+                "json_path": "measures[0].description",
                 "problem": "Human review may want clearer wording.",
                 "source_evidence": "The source-supported data is otherwise valid.",
                 "recommended_fix": null
@@ -532,7 +670,6 @@ def test_audit_policy_impact_returns_current_json_when_audit_passes() -> None:
                 "effective_end_date": "2026-09-28",
                 "affected_scope_refs": [],
                 "excluded_scope_refs": [],
-                "conditions": [],
                 "excluded_chapter99_headings": [],
                 "superseded_chapter99_headings": [],
             }],
@@ -569,7 +706,37 @@ class FakeAuditGenericCorrectedJsonProvider:
         self.call_count = 0
 
     def complete(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        raise AssertionError("complete should not be called")
+        self.call_count += 1
+        assert "senior trade compliance editor" in system
+        assert "Audit Errors To Fix" in user
+        return """
+        <json>{
+            "source": {},
+            "hts_modifications": [{
+                "action": "insert",
+                "note": 40,
+                "deleted": [],
+                "inserted": ["9903.04.63"]
+            }],
+            "scope_sets": [],
+            "measures": [{
+                "measure_heading": "9903.04.63",
+                "measure_heading_type": "chapter99",
+                "note": 40,
+                "description": "UK treatment",
+                "ad_valorem_rate": 10.0,
+                "value_basis": null,
+                "country_iso2": "GB",
+                "is_potential": false,
+                "effective_start_date": null,
+                "effective_end_date": null,
+                "affected_scope_refs": [],
+                "excluded_scope_refs": [],
+                "excluded_chapter99_headings": [],
+                "superseded_chapter99_headings": []
+            }]
+        }</json>
+        """
 
     def complete_with_tools(
         self,
@@ -581,37 +748,6 @@ class FakeAuditGenericCorrectedJsonProvider:
         max_iterations: int = 20,
     ) -> str:
         self.call_count += 1
-        if "senior trade compliance editor" in system:
-            assert "Audit Errors To Fix" in user
-            return """
-            <json>{
-                "source": {},
-                "hts_modifications": [{
-                    "action": "insert",
-                    "note": 40,
-                    "deleted": [],
-                    "inserted": ["9903.04.63"]
-                }],
-                "scope_sets": [],
-                "measures": [{
-                    "measure_heading": "9903.04.63",
-                    "measure_heading_type": "chapter99",
-                    "note": 40,
-                    "description": "UK treatment",
-                    "ad_valorem_rate": 10.0,
-                    "value_basis": null,
-                    "country_iso2": "GB",
-                    "is_potential": false,
-                    "effective_start_date": null,
-                    "effective_end_date": null,
-                    "affected_scope_refs": [],
-                    "excluded_scope_refs": [],
-                    "conditions": ["Product of the United Kingdom"],
-                    "excluded_chapter99_headings": [],
-                    "superseded_chapter99_headings": []
-                }]
-            }</json>
-            """
         assert "senior trade compliance auditor" in system
         if self.call_count == 1:
             return """
@@ -620,15 +756,15 @@ class FakeAuditGenericCorrectedJsonProvider:
                 "issues": [{
                     "severity": "error",
                     "json_path": "measures[0]",
-                    "problem": "The measure rate, conditions, and extra modification need repair.",
+                    "problem": "The measure rate, country code, and extra modification need repair.",
                     "source_evidence": "The source supports a 10 percent rate and one modification.",
-                    "recommended_fix": "Set the supported rate and conditions; delete the extra modification."
+                    "recommended_fix": "Set the supported rate and country code; delete the extra modification."
                 }]
             }</json>
             """
 
         assert '"ad_valorem_rate": 10.0' in user
-        assert '"Product of the United Kingdom"' in user
+        assert '"country_iso2": "GB"' in user
         assert '"modify"' not in user
         return """
         <json>{
@@ -661,7 +797,7 @@ def test_audit_policy_impact_uses_repaired_generic_json_before_next_round() -> N
 
     assert len(result["hts_modifications"]) == 1
     assert result["measures"][0]["ad_valorem_rate"] == 10.0
-    assert result["measures"][0]["conditions"] == ["Product of the United Kingdom"]
+    assert result["measures"][0]["country_iso2"] == "GB"
     assert provider.call_count == 3
 
 
@@ -672,7 +808,7 @@ def test_normalize_hts_chapter_99_download_url() -> None:
 
 
 def test_prompts_model_future_heading_deletions_as_measure_end_dates() -> None:
-    for prompt in (_SYSTEM_PROMPT, _AUDIT_SYSTEM_PROMPT, _REPAIR_SYSTEM_PROMPT):
+    for prompt in (_SYSTEM_PROMPT, _AUDIT_SYSTEM_PROMPT):
         assert "future" in prompt
         assert "effective_end_date" in prompt
         assert "hts_modifications.deleted" in prompt
@@ -681,7 +817,7 @@ def test_prompts_model_future_heading_deletions_as_measure_end_dates() -> None:
 
 
 def test_prompts_allow_heading_text_carveouts_as_excluded_chapter99_headings() -> None:
-    for prompt in (_SYSTEM_PROMPT, _AUDIT_SYSTEM_PROMPT, _REPAIR_SYSTEM_PROMPT):
+    for prompt in (_SYSTEM_PROMPT, _AUDIT_SYSTEM_PROMPT):
         assert "Except as provided for in heading" in prompt
         assert "excluded_chapter99_headings" in prompt
         assert "carveout" in prompt or "exceptions" in prompt
@@ -724,7 +860,6 @@ def test_parse_json_output_accepts_scope_sets_and_scope_refs() -> None:
                 "effective_end_date": null,
                 "affected_scope_refs": ["note16_c_i"],
                 "excluded_scope_refs": [],
-                "conditions": ["Product of the United Kingdom"],
                 "excluded_chapter99_headings": ["9903.82.17"],
                 "superseded_chapter99_headings": ["9903.78.01"]
             }]
@@ -798,7 +933,6 @@ def test_parse_json_output_rejects_duplicate_measure_heading() -> None:
                     "effective_end_date": null,
                     "affected_scope_refs": [],
                     "excluded_scope_refs": [],
-                    "conditions": [],
                     "excluded_chapter99_headings": [],
                     "superseded_chapter99_headings": []
                 }, {
@@ -814,7 +948,6 @@ def test_parse_json_output_rejects_duplicate_measure_heading() -> None:
                     "effective_end_date": null,
                     "affected_scope_refs": [],
                     "excluded_scope_refs": [],
-                    "conditions": [],
                     "excluded_chapter99_headings": [],
                     "superseded_chapter99_headings": []
                 }]
@@ -834,7 +967,7 @@ def test_parse_json_output_rejects_unknown_impact_fields() -> None:
                 "measures": [{
                     "measure_heading": "9903.04.60",
                     "measure_heading_type": "chapter99",
-                    "source_evidence": "audit-only field"
+                    "conditions": []
                 }]
             }</json>
             """
@@ -854,6 +987,31 @@ def test_parse_audit_output_rejects_corrected_json() -> None:
                     "scope_sets": [],
                     "measures": []
                 }
+            }</json>
+            """
+        )
+
+
+def test_parse_audit_output_rejects_separate_errors_field() -> None:
+    with pytest.raises(ValueError, match="unknown field"):
+        _parse_audit_output(
+            """
+            <json>{
+                "verdict": "fail",
+                "issues": [{
+                    "severity": "error",
+                    "json_path": "measures[0].effective_end_date",
+                    "problem": "Wrong end date.",
+                    "source_evidence": "Source supports the corrected end date.",
+                    "recommended_fix": {"effective_end_date": "2027-12-31"}
+                }],
+                "errors": [{
+                    "severity": "error",
+                    "json_path": "measures[0].effective_end_date",
+                    "problem": "Duplicated error.",
+                    "source_evidence": "Same evidence.",
+                    "recommended_fix": {"effective_end_date": "2027-12-31"}
+                }]
             }</json>
             """
         )

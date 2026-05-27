@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _CACHE_DIR = Path("/tmp/hts_cache")
 
 _JSON_RE = re.compile(r"<json>\s*(.*?)\s*</json>", re.DOTALL)
-_HTS_HEADING_RE = r"\d{4}(?:\.\d{2})?(?:\.\d{2}|\.\d{4})?"
+_HTS_HEADING_RE = r"\d{4}(?:\.\d{2})?(?:(?:\.\d{2}){1,2}|\.\d{4})?"
 _HTS_HEADING_ONLY_RE = re.compile(rf"^{_HTS_HEADING_RE}$")
 _HTS_HEADING_OR_RANGE_RE = re.compile(
     rf"^{_HTS_HEADING_RE}(?:-{_HTS_HEADING_RE})?$"
@@ -45,7 +45,6 @@ _MEASURE_FIELDS = {
     "effective_end_date",
     "affected_scope_refs",
     "excluded_scope_refs",
-    "conditions",
     "excluded_chapter99_headings",
     "superseded_chapter99_headings",
 }
@@ -132,9 +131,10 @@ which HTS codes are affected, including any tariff rate changes.
 
 ### Step 1: Parse the policy document
 From the source content and attachment text, identify:
-a. HTS codes explicitly listed (e.g., "9903.82.02")
-b. Differential modifications to HTS notes (e.g., "U.S. note 16 is modified by deleting X and inserting Y")
-c. New heading definitions with rates, descriptions, and applicable conditions
+a. HTS codes explicitly listed in the source text
+b. Differential modifications to HTS notes (for example, a U.S. note is modified by deleting
+   one cross-reference list and inserting another)
+c. New heading definitions with rates, descriptions, and applicability text
 
 ### Step 2: Fetch the latest HTS revision index
 Call http_get("https://hts.usitc.gov/download/archive") to get the archive page.
@@ -155,17 +155,17 @@ Resolve the note modification into concrete HTS heading impacts and measure impa
 Combine the differential description with the note's full text to determine:
 - Which HTS headings are being deleted
 - Which HTS headings are being inserted
-- Which HTS headings have changed rates, conditions, country scope, date windows,
+- Which HTS headings have changed rates, country scope, date windows,
   exclusions, or applicability because of the note modification
 - Which HTS headings are included by each U.S. note subdivision reference. Put those
-  concrete headings in reusable scope_sets. For example, if a measure applies to
-  "U.S. note 16(c)(i)-(iv)", create one scope_set for each relevant subdivision
-  (16(c)(i), 16(c)(ii), 16(c)(iii), 16(c)(iv)) and reference those scope_set IDs
-  from the measure.
+  concrete headings in reusable scope_sets. For example, if a measure applies to a
+  subdivision range within a U.S. note, create one scope_set for each relevant subdivision
+  and reference those scope_set IDs from the measure.
 
 ### Step 4: Look up rates for affected headings
-For each affected HTS heading (e.g., "9903.82"), call:
-search_csv_rows(csv_url, keyword="9903.82", max_rows=50)
+For each affected HTS heading, call search_csv_rows with the most specific stable heading
+prefix that will return the related Chapter 99 rows, for example the shared prefix for a
+new heading group.
 
 Extract from matching CSV rows: description, ad valorem rate, value basis, country scope.
 
@@ -179,57 +179,59 @@ after the closing </json> tag.
 - Process remaining entries normally
 
 ## Output JSON format
+The values below are illustrative placeholders showing field shapes. Do not copy placeholder
+values into the final output; extract concrete values from the source evidence.
 <json>
 {
     "source": {
         "type": "proclamation",
         "id": "11002",
         "url": "https://example.gov/...",
-        "detected_at": "2026-05-07"
+        "detected_at": "<YYYY-MM-DD>"
     },
     "hts_modifications": [
         {
             "action": "replace",
-            "note": 16,
-            "deleted": ["9903.78.01", "9903.81.87"],
-            "inserted": ["9903.82.02"]
+            "note": "<note_number_or_null>",
+            "deleted": ["<deleted_heading_from_source>"],
+            "inserted": ["<inserted_heading_from_source>"],
+            "effective_date": "<YYYY-MM-DD>"
         }
     ],
     "scope_sets": [
         {
-            "id": "note16_c_i",
+            "id": "<scope_set_id>",
             "source": "us_note_subdivision",
-            "note": 16,
-            "subdivision": "16(c)(i)",
-            "label": "Aluminum articles",
-            "headings": ["7601", "7604", "7605"]
+            "note": "<note_number_or_null>",
+            "subdivision": "<subdivision_reference_or_null>",
+            "label": "<scope_label>",
+            "headings": ["<ordinary_hts_heading_or_range_from_source>"]
         },
         {
-            "id": "direct_7601",
+            "id": "<direct_scope_set_id>",
             "source": "direct_hts_modification",
             "note": null,
             "subdivision": null,
-            "label": "Directly modified heading 7601",
-            "headings": ["7601"]
+            "label": "<direct_heading_scope_label>",
+            "headings": ["<ordinary_hts_heading_from_source>"]
         }
     ],
     "measures": [
         {
-            "measure_heading": "9903.82.02",
+            "measure_heading": "<measure_heading_from_source>",
             "measure_heading_type": "chapter99",
-            "note": 16,
-            "description": "Articles of aluminum...",
+            "note": "<note_number_or_null>",
+            "description": "<source_supported_description>",
             "ad_valorem_rate": 50.0,
             "value_basis": "CIF",
             "country_iso2": null,
             "is_potential": false,
-            "effective_start_date": "2026-04-06",
+            "effective_start_date": "<YYYY-MM-DD_or_null>",
             "effective_end_date": null,
-            "affected_scope_refs": ["note16_c_i"],
+            "affected_scope_refs": ["<scope_set_id>"],
             "excluded_scope_refs": [],
-            "conditions": [],
             "excluded_chapter99_headings": [],
-            "superseded_chapter99_headings": ["9903.78.01"]
+            "superseded_chapter99_headings": ["<superseded_heading_from_source>"]
         }
     ]
 }
@@ -242,15 +244,33 @@ Rules:
 - Always output valid JSON inside <json></json> tags
 - Use null for unknown values, not empty strings for optional fields
 - ad_valorem_rate must be a number (e.g., 50.0), not a string
+- For Chapter 99 measures, derive ad_valorem_rate from the HTS table's General duty-rate
+  column for that heading when available.
+  - If the General column says "The duty provided in the applicable subheading + X%" or
+    equivalent, set ad_valorem_rate = X.0.
+  - If the General column contains a standalone ad valorem percentage such as "10%" or
+    "15%", set ad_valorem_rate to that numeric percentage.
+  - If the General column contains no numeric ad valorem percentage and states "No change",
+    "The duty provided in the applicable subheading", ordinary duty only, duty-free, or no
+    additional duty, set ad_valorem_rate = 0.0.
+  - Do not change ad_valorem_rate because another mutually exclusive heading may apply under
+    different applicability rules; capture Chapter 99 priority in excluded_chapter99_headings
+    when source-supported.
 - effective_start_date format: YYYY-MM-DD or null
+- All fields named note must be an integer note number or null. Do not put U.S. note labels,
+  subdivision references, or prose in note fields; use subdivision or label when string context
+  is allowed by the schema.
+- effective_start_date is the effective date of the measure_heading carrier itself.
+- For Chapter 99 measures, use the Annex/HTS amendment effective date for the Chapter 99 heading
+  or governing Chapter 99 note. Do not use a different proclamation operative date unless the
+  proclamation directly creates or starts the Chapter 99 carrier without a separate Annex/HTS
+  effective date.
 - Each non-null measure_heading must appear at most once in measures. Do not split one HTS
   heading into multiple measures for different company groups, country groups, date windows,
-  rate phases, or eligibility groups. Use one measure per heading and preserve those differences
-  in conditions.
+  rate phases, or eligibility groups.
 - If one HTS heading has staggered effective dates for different company groups,
   country groups, or eligibility groups, keep a single measure for that heading. Use the earliest
-  applicable effective_start_date and describe the later effective dates and affected groups in
-  conditions.
+  carrier effective_start_date.
 - For date-only effective_end_date, use the previous calendar date only when the
   measure's own heading, rate, or eligibility treatment is terminated, deleted, or
   superseded effective at 12:01 a.m. on the next date. Do not end a measure merely
@@ -259,43 +279,48 @@ Rules:
 - If a heading is inserted or active for a period and later terminated or deleted on
   a future effective date, do not add a separate hts_modifications.deleted entry for
   that future deletion because hts_modifications has no date field. Keep the heading
-  as a measure, set effective_end_date to the last applicable calendar date, and
-  preserve the future termination/deletion wording in conditions. Do not add
+  as a measure and set effective_end_date to the last applicable calendar date. Do not add
   effective_at or any other field outside the schema.
 - When HTS heading text says "Except as provided for in heading(s) X, Y, Z" or
   equivalent wording that gives other Chapter 99 headings priority over the current
   heading, put those referenced Chapter 99 headings in excluded_chapter99_headings.
-  This is a source-supported heading carveout, not an audit error. Also preserve the
-  prose in conditions when useful for human review.
+  This is a source-supported heading carveout, not an audit error.
 - If one heading has phased or future rate changes, keep one measure for the heading.
-  Set ad_valorem_rate to the earliest/current directly applicable policy rate for that
-  heading and preserve later rate phases, dates, and eligibility groups in conditions.
+  Set ad_valorem_rate to the earliest/current directly applicable policy rate for that heading.
 - Use excluded_chapter99_headings only for Chapter 99 heading priority carveouts or
-  explicit Chapter 99 exceptions. Use excluded_scope_refs for ordinary HTS product
-  scope exclusions represented by scope_sets. Use conditions for text-only limitations
-  that cannot be expressed as either of those structured fields.
+  explicit Chapter 99 exceptions. Use excluded_scope_refs only for product-scope exclusions
+  represented by Chapter 99 scope_sets.
 - hts_modifications.deleted and hts_modifications.inserted must contain only
-  concrete HTS headings/ranges. Do not put note-text placeholders such as
-  "US note 16 (prior text)", "prior U.S. note text", "new U.S. note text", or
-  "U.S. note 16" in these arrays. If exact headings cannot be determined after
+  concrete HTS headings. Do not use compact ranges in these arrays. If the source lists or
+  implies a contiguous Chapter 99 heading span, expand it into every discrete heading in that
+  span using the same decimal depth as the endpoints. Do not put note-text placeholders such as
+  "prior U.S. note text", "new U.S. note text", or a U.S. note reference in these
+  arrays. If exact headings cannot be determined after
   using the tools, use [] rather than a prose placeholder.
 - scope_sets[].headings must be arrays of concrete HTS headings or HTS heading ranges
-  only, e.g. ["7601", "7604.10.10", "7616.99.5160", "7210.61.00-7210.70.60"].
-  Do not put prose, note citations, conditions, countries, or product descriptions
+  only. Do not put prose, note citations, countries, or product descriptions
   in headings arrays.
+- scope_sets are for Chapter 99 measures that need product-scope include/exclude modeling.
+  Do not create scope_sets merely to repeat a Chapter 98 or ordinary HTS measure_heading.
 - measures must not contain includes_headings or excludes_headings. Use
-  affected_scope_refs and excluded_scope_refs to reference scope_sets instead.
+  affected_scope_refs and excluded_scope_refs to reference scope_sets only for Chapter 99
+  scope modeling. For chapter98 and ordinary_hts measures, affected_scope_refs and
+  excluded_scope_refs should be empty because the measure_heading itself identifies the
+  affected provision.
 - measure_heading is the HTS heading that carries the policy measure. It may be a
-  Chapter 99 heading, a Chapter 1-98 ordinary HTS heading, or null for note-only
-  changes. Set measure_heading_type to one of: "chapter99", "ordinary_hts",
-  "note_only", "unknown".
+  Chapter 99 heading, a Chapter 98 special classification heading/subheading, a Chapter 1-97
+  ordinary HTS heading/subheading, or null for note-only changes. Set measure_heading_type to
+  one of: "chapter99", "chapter98", "ordinary_hts", "note_only", "unknown". Use
+  "chapter98" for HTS headings/subheadings beginning with 98 other than Chapter 99.
+- effective_start_date is the effective date of the measure_heading carrier itself. For Chapter
+  99 measures, use the Annex/HTS amendment effective date for the Chapter 99 heading or governing
+  Chapter 99 note. For Chapter 1-98 measures, use the affected HTS provision's own
+  effective/applicability date from the governing HTS chapter, heading text, note, or amendment.
 - measures must not contain duplicate non-null measure_heading values. If the same heading has
-  phased rates or staggered applicability, merge the details into one measure and use conditions
-  to preserve the timeline and eligibility rules.
-- conditions must contain applicability rules such as country, origin-content rules,
-  quota requirements, Column 1 rate thresholds, or date windows. Do not encode these
-  conditions as HTS headings.
-- When a measure applies to a U.S. note subdivision range such as 16(c)(i)-(iv),
+  phased rates or staggered applicability, merge the details into one measure.
+- excluded_chapter99_headings and superseded_chapter99_headings must contain discrete Chapter
+  99 headings only. Expand any source-supported Chapter 99 heading span into individual headings.
+- When a measure applies to a U.S. note subdivision range,
   read the note text and expand every subdivision in that range into scope_sets with
   actual HTS headings/ranges. If the exact headings cannot be determined after using
   the tools, create the scope_set with an empty headings array rather than prose.
@@ -321,41 +346,59 @@ Evidence hierarchy and interpretation:
   structure.
 - If the proclamation body states a tariff rate directly, such as "shall be 10 percent" or
   "shall be 20 percent", that supports ad_valorem_rate = 10.0 or 20.0.
+- For Chapter 99 measures, audit ad_valorem_rate against the HTS table's General duty-rate
+  column, not against whether the heading is default, overridden, mutually exclusive, or
+  conditionally displaced.
+  - "The duty provided in the applicable subheading + X%" supports ad_valorem_rate = X.0.
+  - A standalone General rate such as "10%" or "15%" supports that numeric
+    ad_valorem_rate.
+  - "No change", "The duty provided in the applicable subheading", ordinary duty only,
+    duty-free, or no-additional-duty wording with no numeric percentage supports
+    ad_valorem_rate = 0.0.
 - If an Annex or HTS table says "applicable subheading + X%", ad_valorem_rate should still be
   X.0 when X is the policy ad valorem increment or policy rate. Preserve the additive or cap
-  formula in conditions.
+  formula in the supported measure fields.
 - Do not mark ad_valorem_rate as unsupported merely because the Annex uses formula wording
   rather than a standalone percentage, as long as the numeric rate is correct and the legal
-  formula is preserved in conditions.
+  formula is supported by source evidence.
+- Do not report an ad_valorem_rate error when the General column numeric rate is correct but
+  the JSON could better explain default applicability, mutual exclusivity, lower-rate
+  overrides, or heading priority. Report as a warning unless the missing structured value would
+  cause a concrete wrong calculation.
 - A Chapter 99 heading is supported as inserted if it is listed in the Annex, HTS amendment
   table, or inserted heading list, even if note subdivisions do not separately define every
   heading in prose.
 - Do not reject inserted headings solely because the note text lacks a dedicated subdivision
   for that exact heading.
+- In hts_modifications.deleted, hts_modifications.inserted, excluded_chapter99_headings, and
+  superseded_chapter99_headings, Chapter 99 heading spans must be represented as discrete
+  headings, not compact ranges. If a source lists a contiguous Chapter 99 span, a JSON array with
+  every heading in the span is required; expand using the same decimal depth as the endpoints.
+  Treat compact Chapter 99 range strings in these fields as repairable schema-style issues.
 - For zero-rate or no-additional-duty headings, create or preserve measures when the heading
   represents a legally material tariff treatment, exemption, exclusion, or no-duty category.
-- Annex IV zero-tariff / Proclamation 11012 surcharge-exclusion lists are review-supporting
-  context. If those HTS codes are captured in a scope_set with source/label/conditions indicating
-  Annex IV, section 232 zero tariff, or Proclamation 11012 exclusion, do not fail the audit solely
-  because there is no separate measure for that Annex IV scope. Treat unclear Annex IV modeling
-  as a warning for human review unless it contradicts a tariff rate, heading, or applicability rule.
+- Source-supported zero-tariff, no-additional-duty, or surcharge-exclusion lists are
+  review-supporting context. If those HTS codes are captured in a scope_set with
+  source/label indicating the cited exclusion authority, do not fail the audit solely
+  because there is no separate measure for that scope. Treat unclear exclusion-list modeling as a
+  warning for human review unless it contradicts a tariff rate, heading, or applicability rule.
 - If a heading's duty treatment says "the duty provided in the applicable subheading",
   "no additional duty", "zero tariff", "shall be zero", or equivalent wording, then
   ad_valorem_rate = 0.0 is valid when the measure represents a legally material zero-rate
-  or no-additional-duty category. Preserve the exact treatment in conditions. Do not require
+  or no-additional-duty category. Do not require
   ad_valorem_rate = null solely because the legal text expresses the treatment as ordinary
   subheading duty rather than a standalone "0%" phrase.
 - hts_modifications is heading-oriented. Note subdivision deletion, renumbering, redesignation,
   or conforming article-description changes are useful context, but missing those textual note
-  mechanics is not an error by itself when the affected headings, rates, dates, and applicability
-  conditions are captured. Treat this as a warning or clarifying recommendation unless the
+  mechanics is not an error by itself when the affected headings, rates, dates, and structured
+  applicability are captured. Treat this as a warning or clarifying recommendation unless the
   omission creates a factual contradiction or drops a legally material heading, rate, date, or
-  applicability condition.
+  applicability rule.
 - If a heading is inserted or active for a period and later terminated or deleted on a future
   effective date, hts_modifications must not add a separate date-less deleted entry for that
-  future deletion. Represent the legal effect on the corresponding measure: set
-  effective_end_date to the last applicable calendar date and preserve the future
-  termination/deletion wording in conditions. Do not add effective_at or any other schema field.
+  future deletion. Represent the legal effect on the corresponding measure by setting
+  effective_end_date to the last applicable calendar date. Do not add effective_at or any other
+  schema field.
 - If HTS heading text says "Except as provided for in heading(s) X, Y, Z" or equivalent wording,
   the referenced Chapter 99 headings are valid excluded_chapter99_headings for that measure.
   This captures a source-supported priority carveout where the current heading does not apply if
@@ -364,17 +407,48 @@ Evidence hierarchy and interpretation:
   separate note paragraph.
 - If one heading has phased or future rate changes, one measure for that heading is valid. The
   ad_valorem_rate scalar should be the earliest/current directly applicable policy rate, while
-  later rate phases, dates, and eligibility groups are preserved in conditions. Do not fail the
-  audit merely because a later phase is in conditions instead of the scalar field.
+  later rate phases, dates, and eligibility groups may not fit this schema. Do not fail the audit
+  merely because a later phase is not represented when the scalar field is source-supported.
 - Use excluded_chapter99_headings only for Chapter 99 heading priority carveouts or explicit
-  Chapter 99 exceptions. Use excluded_scope_refs for ordinary HTS product scope exclusions
-  represented by scope_sets. Use conditions for text-only limitations that cannot be expressed
-  as either structured field.
+  Chapter 99 exceptions. Use excluded_scope_refs only for product-scope exclusions represented
+  by Chapter 99 scope_sets.
+- Use scope_sets only for Chapter 99 measures that need product-scope include/exclude modeling.
+  For chapter98 and ordinary_hts measures, do not require scope_sets, affected_scope_refs, or
+  excluded_scope_refs; the measure_heading itself identifies the affected HTS provision.
+- Chapter 98 headings/subheadings must use measure_heading_type="chapter98", not
+  "ordinary_hts" and not "note_only" when the legal change expressly affects a named Chapter 98
+  heading/subheading.
+- Standalone general note changes may be omitted unless they are needed to represent a concrete
+  affected HTS heading, rate, date, country, or user-facing review impact. Do not fail audit
+  solely because standalone general note modifications are absent.
 - Do not infer required note deletion, note renumbering, or conforming text changes beyond
   explicit source evidence. If the source support is ambiguous, report a warning instead of an
   error and keep the supported heading-level data.
 - If evidence appears in different sections, evaluate the proclamation body, Annexes,
   attachment text, and HTS evidence together before marking data unsupported.
+- Effective-date review must be text-grounded and local to the measure_heading carrier:
+  - effective_start_date is the effective date of the measure_heading carrier itself.
+  - Read the exact date from the same operative clause, Annex header, note instruction, heading
+    instruction, table row, or governing HTS chapter/note text that supports the audited field.
+  - Do not rely on memory, nearby examples, publication dates, detected_at dates, current HTS
+    archive dates, or dates from a different clause unless the source expressly connects them.
+  - For Chapter 99 measures, audit effective_start_date against the Annex/HTS amendment
+    effective date for the Chapter 99 heading or governing Chapter 99 note. Do not use a
+    different proclamation operative date unless the proclamation directly creates or starts the
+    Chapter 99 carrier without a separate Annex/HTS effective date.
+  - For Chapter 1-98 provisions, especially Chapter 98, audit effective_start_date and
+    effective_end_date against the relevant HTS chapter text, U.S. note, or heading text for the
+    provision's own applicability period. If the JSON uses a later technical amendment effective
+    date as effective_start_date while HTS text shows an earlier provision start date, report an
+    error and recommend the provision's own start date.
+  - If a policy deletes an end-date phrase from an existing HTS provision and no remaining
+    source-supported end date applies, effective_end_date should be null.
+  - If different source sections state different dates, first determine whether they govern
+    different legal effects (for example, tariff liability, HTS text modification, temporary
+    eligibility, or termination). Use the date that governs the measure_heading carrier.
+  - Report a date error only when the JSON date conflicts with a quoted source date for the same
+    carrier effective date. If the governing date is ambiguous after reading the cited text,
+    report a warning rather than asserting a corrected date.
 
 Audit requirements:
 1. Every hts_modifications.inserted heading must be supported by source text or HTS evidence.
@@ -385,31 +459,35 @@ Audit requirements:
 4. Every inserted Chapter 99 heading that creates or changes a tariff, duty rate, exemption,
    condition, date window, exclusion, or applicability rule must have a corresponding measure.
 5. Every measure_heading must be supported by source text or HTS evidence.
-6. measure_heading_type must match the heading: Chapter 99 headings are chapter99; Chapter 1-98
-   headings are ordinary_hts; note-level changes without a carrier heading are note_only.
+6. measure_heading_type must match the heading: Chapter 99 headings are chapter99; Chapter 98
+   headings/subheadings are chapter98; Chapter 1-97 headings are ordinary_hts; note-level changes
+   without a carrier heading are note_only.
 7. Every measure's rate, country scope, effective date, excluded heading, superseded heading,
-   affected_scope_refs, excluded_scope_refs, and condition must be supported by evidence.
+   affected_scope_refs, and excluded_scope_refs must be supported by evidence.
 8. scope_sets must contain only headings/ranges supported by source text or HTS evidence.
-9. Report unsupported data as issues. Do not invent headings, rates, dates, countries, or
-   conditions.
+   Chapter 99 heading arrays outside scope_sets must use discrete headings, not compact ranges.
+   Every note field in hts_modifications, scope_sets, and measures must be an integer or null.
+9. Report unsupported data as issues. Do not invent headings, rates, dates, or countries.
 10. If exact data cannot be verified, report a recommended_fix that keeps only what is supported
     and uses null/unknown/note_only according to the schema.
 11. Do not block the audit merely because a heading-level hts_modifications record omits note
     subdivision renumbering, redesignation, or conforming prose changes. Flag those as warnings
     unless the omission makes a heading, rate, date, condition, exclusion, or supersession wrong.
-12. Do not block the audit merely because Annex IV zero-tariff / Proclamation 11012 exclusion
-    HTS codes are represented as a scope_set rather than as a separate measure. If the Annex IV
-    list is present and source-supported, and no conflicting nonzero rate is assigned to those
-    headings, pass this aspect or report only a warning for human review.
+12. Do not block the audit merely because source-supported zero-tariff, no-additional-duty, or
+    surcharge-exclusion HTS codes are represented as a scope_set rather than as a separate
+    measure. If the exclusion list is present and source-supported, and no conflicting nonzero
+    rate is assigned to those headings, pass this aspect or report only a warning for human
+    review.
 13. Every non-null measure_heading must appear at most once in measures. If the same heading is
-    duplicated because of Annex III / non-Annex III effective dates, phased rate changes, country
-    conditions, or eligibility groups, merge those records into one measure. Use the earliest
-    applicable effective_start_date for that heading and preserve staggered dates, future rate
-    changes, and group-specific applicability in conditions. Report duplicate records for the
-    same measure_heading as errors.
+    duplicated because of different annex-listed groups, non-annex-listed groups, phased rate
+    changes, country scope, or eligibility groups, merge those records into one measure. Use the
+    carrier effective_start_date for that heading. Report duplicate records for the same
+    measure_heading as errors.
 14. Issues are findings for the repair step. When you identify an unsupported or contradictory
-    value, report a specific json_path, source evidence, and recommended_fix. Do not output a
-    corrected impact JSON and do not claim that you already fixed the JSON.
+    value, report a specific json_path, source evidence, and recommended_fix. Put all findings
+    only in issues; do not output a separate errors field because error issues are already a
+    filtered subset of issues. Do not output a corrected impact JSON and do not claim that you
+    already fixed the JSON.
 15. Use severity="error" only when the current JSON cannot be trusted until repaired. Use
     severity="warning" for source-supported ambiguity or human-review notes.
 16. For date-only effective_end_date fields, apply cutoff semantics when evaluating correctness:
@@ -420,13 +498,14 @@ Audit requirements:
     renumbers a note subdivision or conforms an article description while the same heading and
     duty treatment continue, effective_end_date should be null.
 17. If a future-dated heading termination/deletion is already reflected by a measure's
-    effective_end_date and conditions, report any separate hts_modifications.deleted record that
+    effective_end_date, report any separate hts_modifications.deleted record that
     would make the same heading look both inserted/active and deleted without date context.
 18. When a measure's heading text contains an explicit "Except as provided for in headings ..."
     carveout, the referenced Chapter 99 headings should remain in excluded_chapter99_headings.
-    You may add the wording to conditions for clarity, but do not remove source-supported
-    excluded_chapter99_headings or report them as errors.
-19. Do not output patch instructions, repair operations, repairs arrays, or a corrected impact
+    Do not remove source-supported excluded_chapter99_headings or report them as errors.
+19. Do not fail audit solely because hts_modifications omits note text edits or general note
+    edits when concrete heading-level impacts are captured in measures.
+20. Do not output patch instructions, repair operations, repairs arrays, or a corrected impact
     JSON. The repair step is responsible for producing the complete corrected JSON.
 
 Impact JSON schema:
@@ -435,21 +514,24 @@ Impact JSON schema:
 - hts_modifications[] fields: action, note, deleted, inserted.
   - action: string such as "insert", "delete", "modify", or "replace".
   - note: integer or null.
-  - deleted: array of concrete HTS headings/ranges.
-  - inserted: array of concrete HTS headings/ranges.
+  - deleted: array of concrete HTS headings. For Chapter 99 headings, use discrete headings,
+    not compact ranges.
+  - inserted: array of concrete HTS headings. For Chapter 99 headings, use discrete headings,
+    not compact ranges.
 - scope_sets[] fields: id, source, note, subdivision, label, headings.
   - id: non-empty string.
   - source: string or null.
   - note: integer or null.
   - subdivision: string or null.
   - label: string or null.
-  - headings: array of concrete HTS headings/ranges.
+  - headings: array of concrete HTS headings/ranges. Ordinary HTS ranges are allowed here when
+    source-supported.
 - measures[] fields: measure_heading, measure_heading_type, note, description,
   ad_valorem_rate, value_basis, country_iso2, is_potential, effective_start_date,
-  effective_end_date, affected_scope_refs, excluded_scope_refs, conditions,
-  excluded_chapter99_headings, superseded_chapter99_headings.
+  effective_end_date, affected_scope_refs, excluded_scope_refs, excluded_chapter99_headings,
+  superseded_chapter99_headings.
   - measure_heading: concrete HTS heading or null.
-  - measure_heading_type: "chapter99", "ordinary_hts", "note_only", or "unknown".
+  - measure_heading_type: "chapter99", "chapter98", "ordinary_hts", "note_only", or "unknown".
   - note: integer or null.
   - description: string or null.
   - ad_valorem_rate: number or null. Do not use strings such as "10%".
@@ -458,70 +540,73 @@ Impact JSON schema:
   - is_potential: boolean.
   - effective_start_date: YYYY-MM-DD string or null.
   - effective_end_date: YYYY-MM-DD string or null.
-  - affected_scope_refs and excluded_scope_refs: arrays of scope_sets[].id strings.
-  - conditions: array of strings.
-  - excluded_chapter99_headings and superseded_chapter99_headings: arrays of concrete HTS
-    headings/ranges.
+  - affected_scope_refs and excluded_scope_refs: arrays of scope_sets[].id strings. These should
+    normally be empty for chapter98 and ordinary_hts measures.
+  - excluded_chapter99_headings and superseded_chapter99_headings: arrays of discrete concrete
+    Chapter 99 headings. Do not use compact ranges in these fields.
 
 Severity:
 - Use severity="error" only for factual contradictions, unsupported headings/rates/dates/
-  conditions, missing legally material measures, invalid schema semantics, or corrections that
-  are required before the JSON can be trusted.
+  missing legally material measures, invalid schema semantics, or corrections that are required
+  before the JSON can be trusted.
 - Use severity="warning" for representational ambiguity where the data is source-supported but
   could be clearer.
-- Use severity="warning", not severity="error", when Annex IV zero-tariff / Proclamation 11012
-  surcharge-exclusion HTS codes are source-supported but modeled only as a scope_set. Human
+- Use severity="warning", not severity="error", when source-supported zero-tariff,
+  no-additional-duty, or surcharge-exclusion HTS codes are modeled only as a scope_set. Human
   review will decide whether a separate zero-rate measure should be added.
-- If the JSON captures the correct numeric rate and preserves the legal formula in conditions,
-  do not mark it as an error.
+- If the rate scalar matches the General duty-rate column under the rules above, do not use
+  severity="error" for ad_valorem_rate. Applicability ambiguity is normally a warning.
+- If a heading's General column wording is "The duty provided in the applicable subheading +
+  X%" or equivalent, ad_valorem_rate = X.0 is correct. If the measure needs clearer default,
+  override, or mutual-exclusivity modeling, do not mark the numeric rate wrong.
 - If a zero-rate/no-additional-duty heading is modeled with ad_valorem_rate = 0.0 and the
-  conditions preserve the "duty provided in the applicable subheading" or no-additional-duty
-  wording, do not mark it as an error.
+  source supports the "duty provided in the applicable subheading" or no-additional-duty wording,
+  do not mark it as an error.
 - If excluded_chapter99_headings comes from explicit heading-text carveout wording such as
-  "Except as provided for in headings 9903.82.14, 9903.85.67 and 9903.85.68", it is
-  source-supported and structurally valid. Do not mark this as an error.
-- If a later phased rate is preserved in conditions for the same measure_heading, do not mark it
-  as an error merely because ad_valorem_rate contains the earliest/current directly applicable
-  rate.
-- Prefer adding clarifying conditions over deleting measures when the heading and rate are
-  supported.
+  "Except as provided for in headings X, Y, and Z", it is source-supported and structurally
+  valid. Do not mark this as an error.
+- Use severity="error" for compact Chapter 99 range strings only when they appear in
+  hts_modifications.deleted, hts_modifications.inserted, excluded_chapter99_headings, or
+  superseded_chapter99_headings and can be expanded into discrete source-supported headings.
+- Do not mark a source-supported earliest/current directly applicable ad_valorem_rate as an error
+  merely because later phased rate details do not fit the scalar field.
 - Missing note subdivision renumbering, redesignation, or conforming article-description prose is
   normally a warning. Escalate it to an error only when it changes the extracted legal effect.
 - Use severity="error" only for remaining problems in the current impact JSON.
-- If you can identify the exact corrected scalar value for a field such as effective_end_date,
-  put that exact value in recommended_fix so the repair step can apply it.
+- recommended_fix must be concise and directly machine-usable by the repair step. Prefer a JSON
+  object or scalar containing the target result, for example {"effective_end_date":"2027-12-31"}
+  or {"effective_end_date":null}. Do not write paragraphs, alternatives, explanations, or
+  conditional prose inside recommended_fix.
 - If a heading's same duty treatment continues after a note renumbering or conforming description
   change, effective_end_date must be null. Do not infer termination from renumbering alone.
 - Duplicate non-null measure_heading values are invalid. Merge duplicates into one measure and
-  preserve staggered effective dates, future rate changes, country conditions, and eligibility
-  groups in conditions.
+  keep only schema-supported fields.
 
 Examples:
-- If the source says "The tariff rate for products of the United Kingdom shall be 10 percent"
-  and an Annex says "applicable subheading + 10%", this supports ad_valorem_rate = 10.0 when
-  conditions preserve the UK treatment formula. This is not an error.
-- If the source says the ad valorem duty rate shall be 20 percent for products of companies
-  with approved onshoring plans, this supports ad_valorem_rate = 20.0 even if the Annex table
-  phrases the HTS treatment as "applicable subheading + 20%"; preserve that formula in
-  conditions.
-- If an Annex or inserted heading list includes headings 9903.04.60 through 9903.04.69, then
-  headings 9903.04.67 and 9903.04.68 are source-supported as inserted headings even if the
-  surrounding note subdivisions are sparse, provided their tariff treatment is supported by the
-  proclamation body, Annex, or HTS evidence.
-- If heading 9903.04.61 says "The duty provided in the applicable subheading" or equivalent
-  no-additional-duty wording, ad_valorem_rate = 0.0 is acceptable when conditions preserve that
+- If the source states a tariff rate for products meeting a country-specific eligibility rule
+  and an Annex says "applicable subheading + X%", this supports ad_valorem_rate = X.0 when
+  the country-specific eligibility formula supports that heading. This is not an error.
+- If the source states an ad valorem duty rate for products meeting a named eligibility program,
+  this supports the corresponding numeric ad_valorem_rate even if the Annex table phrases the
+  HTS treatment as "applicable subheading + X%".
+- If an Annex or inserted heading list includes a contiguous Chapter 99 heading group, then
+  intermediate headings in that source-supported span are supported as inserted headings even if
+  the surrounding note subdivisions are sparse. Represent the group as discrete headings in
+  Chapter 99 heading arrays, not as a compact range string.
+- If a heading says "The duty provided in the applicable subheading" or equivalent
+  no-additional-duty wording, ad_valorem_rate = 0.0 is acceptable when the source supports that
   wording. Do not require null for this legally material zero-rate treatment.
-- If a source deletes heading 9903.04.65 and also includes related note 40 subdivision
-  renumbering or conforming text for 9903.04.66, the heading deletion and the surviving
-  9903.04.66 measure can still be valid even if hts_modifications does not separately encode the
-  note-text mechanics. Recommend a clarifying warning or condition if useful; do not fail the
-  audit unless a supported heading/rate/date/applicability condition is actually wrong or missing.
-- If Annex I(B) terminates heading 9903.04.65 effective 2029-01-20 but only renumbers the note
-  reference for 9903.04.66, the 9903.04.65 measure ends on 2029-01-19 and the 9903.04.66 measure
-  continues with effective_end_date = null.
-- If a proclamation gives one effective_start_date for Annex III companies and a later
-  effective_start_date for other companies, keep one measure for each affected heading. Use the
-  earliest applicable effective_start_date and state the later group-specific date in conditions.
+- If a source deletes one heading and also includes related note subdivision renumbering or
+  conforming text for another surviving heading, the heading deletion and surviving measure can
+  still be valid even if hts_modifications does not separately encode the note-text mechanics.
+  Recommend a clarifying warning if useful; do not fail the audit unless a supported
+  heading/rate/date/applicability rule is actually wrong or missing.
+- If an Annex terminates one heading effective on a future date but only renumbers the note
+  reference for another heading, the terminated measure ends on the previous calendar date and
+  the surviving measure continues with effective_end_date = null.
+- If a proclamation gives one effective_start_date for one eligibility group and a later
+  effective_start_date for another group, keep one measure for each affected heading and use the
+  carrier effective_start_date.
 
 Return only a JSON audit result wrapped in <json></json>. Do not include text after </json>.
 
@@ -535,7 +620,7 @@ Output format:
       "json_path": "hts_modifications[0].inserted[0]",
       "problem": "Short explanation of the issue or concern.",
       "source_evidence": "Specific supporting source text, attachment text, or HTS evidence.",
-      "recommended_fix": "Specific correction, or null if no correction is needed."
+      "recommended_fix": {"effective_end_date": "2027-12-31"}
     }
   ]
 }
@@ -549,42 +634,40 @@ that must be repaired before storage.
 _REPAIR_SYSTEM_PROMPT = """\
 You are a senior trade compliance editor repairing a policy impact JSON.
 
-Your task is not to audit or explain. Your task is to directly fix the JSON using the provided
-policy document, attachments, HTS evidence, current impact JSON, and audit error issues.
+Your task is mechanical repair only. Do not audit, verify, question, reinterpret, or explain the
+audit findings. Directly apply the audit error issues to the current impact JSON.
 
 Rules:
-- Output only the repaired complete impact JSON wrapped in <json></json>.
+- Output only the repaired complete impact JSON wrapped in <json></json>. The first non-space
+  characters of the response must be <json> and the last non-space characters must be </json>.
 - Do not output verdict, issues, repairs, comments, markdown, or explanatory text.
-- Directly fix every audit error that can be fixed from the provided evidence.
-- If an audit error says an hts_modifications entry is unsupported or misleading, remove or
-  rewrite that entry in the repaired JSON.
-- If an audit error says a legally material measure is missing, add the supported measure.
-- If an audit error says a value is unsupported, replace it with the supported value or null.
-- If an issue is ambiguous but not a factual contradiction, preserve source-supported data and
-  put the uncertainty in conditions for human review.
+- Do not output apologies, limitations, analysis, patch instructions, bullets, or any text
+  outside the <json> block. JSON object keys and string values must use double quotes, with no
+  trailing commas and no comments.
+- Do not decide whether an audit error is correct. Do not re-check source_evidence. Do not look
+  up source documents, HTS PDFs, URLs, or external data. Do not call tools.
+- Apply every error issue to the current JSON. Treat recommended_fix as the instruction/result
+  to apply. If recommended_fix contains a scalar, object, array, or null, copy that target value
+  into the referenced json_path or merge the object into the referenced object.
+- If recommended_fix is textual, perform the direct edit it names without adding new analysis.
+- If multiple error issues touch the same object, apply all of them and keep the JSON schema
+  valid.
 - Keep exactly the impact JSON schema: source, hts_modifications, scope_sets, measures.
+- Fields named note must be integers or null. Do not put U.S. note labels, subdivision labels, or
+  prose in note fields; use labels only where the schema allows string context.
+- The repaired JSON must be complete. Do not return prose, partial JSON, an empty response, or a
+  non-schema object.
 - Do not create duplicate non-null measure_heading values. Merge duplicate headings into one
-  measure and preserve date/rate/eligibility nuances in conditions.
-- If one heading has phased or future rate changes, keep one measure for the heading. Set
-  ad_valorem_rate to the earliest/current directly applicable policy rate for that heading and
-  preserve later rate phases, dates, and eligibility groups in conditions.
-- Use excluded_chapter99_headings only for Chapter 99 heading priority carveouts or explicit
-  Chapter 99 exceptions. Use excluded_scope_refs for ordinary HTS product scope exclusions
-  represented by scope_sets. Use conditions for text-only limitations that cannot be expressed
-  as either structured field.
+  measure and keep only schema-supported fields.
+- Expand compact Chapter 99 heading ranges into discrete headings in hts_modifications.deleted,
+  hts_modifications.inserted, excluded_chapter99_headings, and superseded_chapter99_headings.
+  Expand using the same decimal depth as the range endpoints. Do not output compact Chapter 99
+  range strings in those fields.
+- Use scope_sets, affected_scope_refs, and excluded_scope_refs only for Chapter 99 scope
+  modeling. Keep affected_scope_refs and excluded_scope_refs empty for chapter98 and ordinary_hts
+  measures.
 - Keep hts_modifications heading-oriented. Do not include note-only changes with empty
   deleted/inserted arrays as heading modifications.
-- For Annex IV zero-tariff / Proclamation 11012 surcharge-exclusion lists, a source-supported
-  scope_set is sufficient; a separate measure is optional unless needed to avoid contradiction.
-- For zero-rate or no-additional-duty Chapter 99 headings that define an exclusion or treatment,
-  preserve a measure with ad_valorem_rate = 0.0 when the heading is source-supported.
-- For future-dated heading terminations/deletions, repair the affected measure's
-  effective_end_date and conditions. Do not add or keep a separate hts_modifications.deleted
-  entry that lacks date context for the future deletion, and do not add effective_at or any
-  other field outside the schema.
-- Do not remove source-supported excluded_chapter99_headings that come from explicit heading-text
-  exceptions such as "Except as provided for in headings X, Y, Z". Preserve those Chapter 99
-  headings in excluded_chapter99_headings and keep the prose in conditions if useful.
 """
 
 # ---------------------------------------------------------------------------
@@ -791,19 +874,10 @@ def _build_repair_user_message(
         f"Policy Update ID: {inp.policy_update_id}",
         f"Source Key: {inp.source_key}",
         f"Title: {inp.source_title}",
-        f"Source URL: {inp.source_url}",
-        "",
-        "## Policy Document Content",
-        inp.source_content,
-    ]
-    if inp.briefing:
-        parts += ["", "## Briefing", inp.briefing]
-    if inp.attachment_text:
-        parts += ["", "## Attachment Content", inp.attachment_text]
-    parts += [
         "",
         "## Audit Errors To Fix",
-        "Fix these errors directly in the repaired JSON. Do not restate them as issues.",
+        "Fix these errors directly in the repaired JSON. Use the recommended_fix values as the "
+        "source of truth. Do not restate errors as issues.",
         json.dumps(error_issues, ensure_ascii=False, indent=2, sort_keys=True),
         "",
         "## Current Impact JSON To Repair",
@@ -936,10 +1010,10 @@ def _validate_measures(data: dict, scope_ids: set[str]) -> None:
         _validate_allowed_fields(measure, _MEASURE_FIELDS, f"measure {index}")
 
         heading_type = measure.get("measure_heading_type")
-        if heading_type not in {"chapter99", "ordinary_hts", "note_only", "unknown"}:
+        if heading_type not in {"chapter99", "chapter98", "ordinary_hts", "note_only", "unknown"}:
             raise ValueError(
                 f"impact JSON measure {index}.measure_heading_type must be chapter99, "
-                "ordinary_hts, note_only, or unknown"
+                "chapter98, ordinary_hts, note_only, or unknown"
             )
 
         measure_heading = measure.get("measure_heading")
@@ -948,7 +1022,7 @@ def _validate_measures(data: dict, scope_ids: set[str]) -> None:
                 raise ValueError(
                     f"impact JSON measure {index}.measure_heading must be a concrete HTS heading or null"
                 )
-        elif heading_type in {"chapter99", "ordinary_hts"}:
+        elif heading_type in {"chapter99", "chapter98", "ordinary_hts"}:
             raise ValueError(
                 f"impact JSON measure {index}.measure_heading is required for {heading_type}"
             )
@@ -963,6 +1037,10 @@ def _validate_measures(data: dict, scope_ids: set[str]) -> None:
             refs = measure.get(field, [])
             if not isinstance(refs, list):
                 raise ValueError(f"impact JSON measure {index}.{field} must be an array")
+            if heading_type in {"chapter98", "ordinary_hts"} and refs:
+                raise ValueError(
+                    f"impact JSON measure {index}.{field} must be empty for {heading_type}"
+                )
             for ref in refs:
                 if not isinstance(ref, str) or ref not in scope_ids:
                     raise ValueError(
@@ -975,13 +1053,6 @@ def _validate_measures(data: dict, scope_ids: set[str]) -> None:
                 raise ValueError(f"impact JSON measure {index}.{field} must be an array")
             for value in values:
                 _validate_heading_or_range(value, f"measure {index}.{field}")
-
-        conditions = measure.get("conditions", [])
-        if not isinstance(conditions, list):
-            raise ValueError(f"impact JSON measure {index}.conditions must be an array")
-        for condition in conditions:
-            if not isinstance(condition, str):
-                raise ValueError(f"impact JSON measure {index}.conditions entries must be strings")
 
 
 def _validate_heading_or_range(value: object, context: str) -> None:
@@ -1037,12 +1108,11 @@ def audit_policy_impact(
 
         error_issues = _audit_error_issues(audit)
         logger.info(
-            "policy_impact_audit: policy_update_id=%s round=%s verdict=%s issues=%s errors=%s",
+            "policy_impact_audit: policy_update_id=%s round=%s verdict=%s issues=%s",
             inp.policy_update_id,
             audit_round,
             audit["verdict"],
-            len(audit["issues"]),
-            len(error_issues),
+            audit["issues"],
         )
         if not error_issues:
             return current_json
@@ -1078,7 +1148,7 @@ def repair_policy_impact(
     audit_round: int,
 ) -> dict:
     """Repair a failed audit result into a complete candidate JSON for the next audit round."""
-    response_text = llm.complete_with_tools(
+    response_text = llm.complete(
         _REPAIR_SYSTEM_PROMPT,
         _build_repair_user_message(
             inp,
@@ -1086,10 +1156,7 @@ def repair_policy_impact(
             error_issues,
             audit_round=audit_round,
         ),
-        _TOOLS,
-        _dispatch_tool,
         max_tokens=16384,
-        max_iterations=20,
     )
     return _parse_json_output(response_text)
 
